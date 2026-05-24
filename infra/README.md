@@ -82,6 +82,47 @@ kubectl get nodes
 kubectl get pods -A
 ```
 
+## Full demo run against a fresh account
+
+Used when validating end-to-end against a short-lived AWS account (e.g. an
+O'Reilly lab that lasts an hour). Wall-clock budget on the happy path is
+roughly: bootstrap+init ~1 min, apply ~15 min, verify ~1 min, destroy
+~10–12 min. Start with at least 45 min left on the lab clock.
+
+```bash
+# 1. Point at the lab account.
+export AWS_PROFILE=<the profile from ~/.aws/config>
+aws sts get-caller-identity                          # confirm the account/arn
+
+# 2. S3 buckets are global; embed the account id so re-runs don't collide.
+export TFSTATE_BUCKET=sample-eks-tfstate-$(aws sts get-caller-identity --query Account --output text)
+export AWS_REGION=us-east-1
+
+# 3. Bring it up.
+make infra-bootstrap                                 # idempotent, ~20s
+make infra-init
+make infra-validate                                  # fmt + validate, no AWS calls
+make infra-plan                                      # eyeball the diff
+make infra-apply                                     # type 'yes', ~15 min
+
+# 4. Wire kubectl, run sanity checks.
+$(terraform -chdir=infra/envs/dev output -raw kubeconfig_command)
+make infra-verify
+
+# 5. Idempotency probe — must say "No changes".
+make infra-plan
+
+# 6. Tear down.
+make infra-destroy
+
+# 7. (optional) drop the state bucket too.
+aws s3 rb s3://$TFSTATE_BUCKET --force
+```
+
+If `apply` errors on EIP quota (default is 5 per region, we ask for 3), set
+`single_nat_gateway = true` in `main.tf` for the demo run only — don't
+commit that change.
+
 ## Destroy
 
 ```bash
