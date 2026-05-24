@@ -97,5 +97,5 @@ _Coming with the deploy track._
 
 - `git`, `make`, `docker` (with `buildx`)
 - `python` 3.12+ (for local app dev)
-- `terraform` 1.9+, `aws` CLI v2 (for infra)
+- `terraform` 1.10+, `aws` CLI v2 (for infra)
 - `kubectl`, `helm` 3.x (for deploy)

@@ -7,9 +7,7 @@ provider "aws" {
   }
 }
 
-# Kubernetes and helm providers are configured against the EKS cluster's API
-# endpoint. Using the exec plugin (vs. a static token) means credentials are
-# refreshed on every invocation and survive long applies.
+# exec plugin (not a static token) so creds refresh during long applies.
 provider "kubernetes" {
   host                   = module.eks.cluster_endpoint
   cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)

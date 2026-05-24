@@ -35,16 +35,13 @@ out of scope.
 - A managed node group on AL2023 (`t3.medium`, min/desired/max = 2/2/4) in
   the private subnets.
 - The `vpc-cni`, `coredns`, `kube-proxy`, and `eks-pod-identity-agent`
-  add-ons. The EBS CSI driver is intentionally **not** installed — the
-  microservice is stateless and the monitoring stack uses `emptyDir`, so
-  there are no PersistentVolumes to provision.
+  add-ons. EBS CSI is omitted; nothing in the demo needs PVs.
 - An IAM role + EKS Pod Identity association for the AWS Load Balancer
-  Controller. The controller itself is **not** installed by Terraform — that
-  belongs to the deploy track.
+  Controller. Controller install lives in the deploy track.
 
 ## Prerequisites
 
-- Terraform `>= 1.9`
+- Terraform `>= 1.10` (S3 native locking via `use_lockfile`)
 - AWS CLI v2, authenticated against the target account (`aws sts get-caller-identity` works)
 - Permissions to create VPCs, EKS clusters, IAM roles, KMS keys, S3 buckets
 
@@ -141,16 +138,20 @@ aws s3 rb s3://sample-eks-microservice-tfstate --force
 
 ## Common pitfalls
 
-- **Subnet tagging missing**: if the ALB controller can't find subnets, the
-  `kubernetes.io/role/elb` and `kubernetes.io/cluster/<name>=shared` tags
-  are likely off. They're set in `main.tf` — double-check the cluster name
-  matches what the chart references.
-- **NAT Gateway costs**: the per-AZ NAT pattern is right for production but
-  costs ~$32/mo per AZ. For long-running dev clusters set
-  `single_nat_gateway = true` in the `vpc` module to drop to a single NAT.
-- **`use_lockfile` requires Terraform 1.10+**: the backend uses S3-native
-  locking instead of DynamoDB. Older Terraform versions silently skip the
-  lock — pin `>= 1.9` (this repo) and prefer `>= 1.10` to be safe.
-- **First-run permissions**: whoever runs `terraform apply` becomes a
-  cluster-admin via `enable_cluster_creator_admin_permissions = true`.
-  Plan accordingly if you're applying from CI.
+If the ALB controller can't find subnets to use, the
+`kubernetes.io/role/elb` / `kubernetes.io/cluster/<name>=shared` tags are
+probably wrong; they're set in `main.tf` and the cluster name has to match
+what the chart references.
+
+The per-AZ NAT pattern costs around $32/mo per AZ. Fine for production,
+expensive for a long-running dev cluster — flip `single_nat_gateway = true`
+in the vpc module if you don't care about AZ-level isolation.
+
+The S3 backend uses `use_lockfile = true`, which needs Terraform 1.10+.
+That's why `versions.tf` pins `>= 1.10` rather than `>= 1.9`; older
+versions silently skip the lock and will eventually corrupt state if two
+applies overlap.
+
+Whoever runs `terraform apply` first becomes cluster-admin
+(`enable_cluster_creator_admin_permissions = true`). Worth knowing if
+you're planning to apply from CI.

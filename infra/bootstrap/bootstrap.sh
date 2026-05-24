@@ -1,14 +1,12 @@
 #!/usr/bin/env bash
-# Create (or recreate) the S3 bucket that holds Terraform state for this repo.
-#
-# Idempotent: safe to run multiple times. The script enables versioning, SSE-S3
-# encryption, and blocks all public access.
+# Creates the S3 bucket that holds Terraform state. Idempotent — sets
+# versioning + SSE-S3 + public-access-block.
 #
 # Usage: bootstrap.sh <bucket-name> <region>
 # Example: bootstrap.sh sample-eks-microservice-tfstate us-east-1
 #
-# After it succeeds, drop these into envs/dev/backend.tfvars (or pass on the
-# command line) so terraform init can find the bucket:
+# Pass the bucket/region into `terraform init` via -backend-config, or drop
+# them in envs/dev/backend.tfvars:
 #   bucket = "<bucket-name>"
 #   region = "<region>"
 #   key    = "envs/dev/terraform.tfstate"
@@ -43,8 +41,12 @@ create_bucket() {
 
 echo ">> ensuring bucket $bucket exists in $region"
 if ! create_bucket 2>/tmp/bootstrap.err; then
-  if grep -qE 'BucketAlreadyOwnedByYou|BucketAlreadyExists' /tmp/bootstrap.err; then
-    echo "   bucket already exists, continuing"
+  if grep -q 'BucketAlreadyOwnedByYou' /tmp/bootstrap.err; then
+    echo "   bucket already owned by this account, continuing"
+  elif grep -q 'BucketAlreadyExists' /tmp/bootstrap.err; then
+    echo "   bucket name '$bucket' is already taken globally by another account." >&2
+    echo "   pick a different name (e.g. include the AWS account id)." >&2
+    exit 1
   else
     cat /tmp/bootstrap.err >&2
     exit 1

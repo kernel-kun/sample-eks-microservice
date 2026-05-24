@@ -1,6 +1,5 @@
-# Partial backend config. The bucket and region are passed at init time so the
-# same code works against any pre-bootstrapped state bucket. Locking uses S3's
-# native conditional writes (use_lockfile) — no DynamoDB table required.
+# Partial backend — bucket/region come from -backend-config at init time.
+# Locking uses S3 conditional writes (use_lockfile), no DynamoDB needed.
 #
 # terraform -chdir=infra/envs/dev init \
 #   -backend-config="bucket=<bucket>" \
