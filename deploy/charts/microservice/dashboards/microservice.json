@@ -31,7 +31,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-          "expr": "min(up{job=~\".*microservice.*\"})",
+          "expr": "min(up{job=~\".*microservice.*\"}) or vector(0)",
           "refId": "A"
         }
       ],
@@ -39,7 +39,8 @@
         "colorMode": "background",
         "graphMode": "none",
         "justifyMode": "center",
-        "textMode": "value"
+        "textMode": "value",
+        "reduceOptions": { "calcs": ["last"], "fields": "", "values": false }
       },
       "fieldConfig": {
         "defaults": {
@@ -140,7 +141,7 @@
         "colorMode": "none",
         "graphMode": "none",
         "justifyMode": "center",
-        "textMode": "name",
+        "textMode": "value",
         "reduceOptions": { "fields": "/^image$/", "values": false, "calcs": ["lastNotNull"] }
       },
       "fieldConfig": {
@@ -217,14 +218,14 @@
     },
     {
       "type": "stat",
-      "title": "Error ratio (5m)",
+      "title": "Error ratio (4xx+5xx, 5m)",
       "id": 7,
       "gridPos": { "h": 8, "w": 8, "x": 16, "y": 12 },
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-          "expr": "(sum(rate(http_requests_total{job=~\".*microservice.*\",status=~\"5..\"}[5m])) or vector(0)) / clamp_min(sum(rate(http_requests_total{job=~\".*microservice.*\"}[5m])), 0.001)",
+          "expr": "(sum(rate(http_requests_total{job=~\".*microservice.*\",status=~\"[45]..\"}[5m])) or vector(0)) / clamp_min(sum(rate(http_requests_total{job=~\".*microservice.*\"}[5m])), 0.001)",
           "refId": "A"
         }
       ],
