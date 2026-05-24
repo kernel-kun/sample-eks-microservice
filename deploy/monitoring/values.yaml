@@ -62,13 +62,27 @@ grafana:
   # needing a CSI driver in the lab account.
   persistence:
     enabled: false
+  # Grafana 13 adds a unified-storage / API-server layer (bleve search index,
+  # /apis/dashboard.grafana.app, /apis/userstorage.grafana.app) plus a few
+  # pre-installed plugins. Those run on the same HTTP server as /api/health,
+  # so the chart's default 1s readiness timeout flips the pod to NotReady
+  # whenever the API server is busy. Bump memory headroom and loosen the
+  # readiness probe to match liveness.
   resources:
     requests:
-      cpu: 50m
-      memory: 128Mi
-    limits:
-      cpu: 200m
+      cpu: 100m
       memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  readinessProbe:
+    httpGet:
+      path: /api/health
+      port: 3000
+    initialDelaySeconds: 30
+    timeoutSeconds: 30
+    periodSeconds: 10
+    failureThreshold: 6
   # Default datasource is the in-stack Prometheus. The dashboard JSON
   # references it via the ${DS_PROMETHEUS} variable.
   service:
