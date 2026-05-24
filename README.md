@@ -99,8 +99,13 @@ To run the same install locally against an existing kube context:
 
 ```bash
 make chart-lint                            # helm lint + template
-make deploy-local VPC_ID=vpc-...           # installs all three releases
+make deploy-local                          # installs all three releases
 ```
+
+`deploy-local` defaults to `CLUSTER_NAME=sample-eks` and `AWS_REGION=us-east-1`
+and auto-discovers the VPC ID + ALB controller role ARN from the cluster.
+Override any of those on the command line if your cluster is named or hosted
+differently.
 
 Long-form walkthrough lives in `deploy/README.md`.
 

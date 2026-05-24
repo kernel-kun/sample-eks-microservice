@@ -76,17 +76,13 @@ point of failure.
 
 ```bash
 make chart-lint                                        # helm lint + template render
-make deploy-local CLUSTER_NAME=sample-eks VPC_ID=vpc-... AWS_REGION=us-east-1
+make deploy-local CLUSTER_NAME=sample-eks AWS_REGION=us-east-1
 ```
 
-`deploy-local` mirrors the workflow but uses your current kube context. It
-requires `VPC_ID` because the ALB controller chart hard-fails without it.
-Find it with:
-
-```bash
-aws eks describe-cluster --name "$CLUSTER_NAME" \
-  --query 'cluster.resourcesVpcConfig.vpcId' --output text
-```
+`deploy-local` mirrors the workflow but uses your current kube context. The
+VPC ID and ALB controller role ARN are auto-discovered from `CLUSTER_NAME`
+(via `aws eks describe-cluster` and `aws iam get-role`). Override `VPC_ID=...`
+on the command line if you ever need to pin one explicitly.
 
 ## Microservice chart values
 

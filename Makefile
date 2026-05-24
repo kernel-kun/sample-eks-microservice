@@ -69,9 +69,18 @@ chart-lint:     ## helm lint + template render the microservice chart
 chart-template: ## Render the chart to stdout (helpful for diffing)
 	helm template test $(CHART_DIR)
 
-deploy-local:   ## Install ALB controller + monitoring + microservice against the current kube context (auto-recovers stuck pending-install)
-	@if [ -z "$(VPC_ID)" ]; then echo "VPC_ID is required (e.g. make deploy-local VPC_ID=vpc-...)"; exit 1; fi
+deploy-local:   ## Install ALB controller + monitoring + microservice against the current kube context (auto-discovers VPC + role ARN, auto-recovers stuck pending-install)
 	@set -e; \
+	vpc_id="$(VPC_ID)"; \
+	if [ -z "$$vpc_id" ]; then \
+	  echo "Discovering VPC ID for cluster $(CLUSTER_NAME)..."; \
+	  vpc_id=$$(aws eks describe-cluster --name "$(CLUSTER_NAME)" --region "$(AWS_REGION)" \
+	    --query 'cluster.resourcesVpcConfig.vpcId' --output text 2>/dev/null || true); \
+	fi; \
+	if [ -z "$$vpc_id" ] || [ "$$vpc_id" = "None" ]; then \
+	  echo "Could not determine VPC ID for cluster $(CLUSTER_NAME). Is the cluster up?"; exit 1; \
+	fi; \
+	echo "VPC: $$vpc_id"; \
 	echo "Discovering ALB controller IAM role ARN..."; \
 	role_arn=$$(aws iam get-role --role-name "$(CLUSTER_NAME)-alb-controller" --query 'Role.Arn' --output text 2>/dev/null || true); \
 	if [ -z "$$role_arn" ] || [ "$$role_arn" = "None" ]; then \
@@ -98,7 +107,7 @@ deploy-local:   ## Install ALB controller + monitoring + microservice against th
 	helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
 		-n kube-system --version 1.14.0 \
 		-f deploy/ingress-controller/values.yaml \
-		--set clusterName=$(CLUSTER_NAME) --set region=$(AWS_REGION) --set vpcId=$(VPC_ID) \
+		--set clusterName=$(CLUSTER_NAME) --set region=$(AWS_REGION) --set vpcId=$$vpc_id \
 		--set "serviceAccount.annotations.eks\.amazonaws\.com/role-arn=$$role_arn" \
 		--wait --timeout 5m; \
 	helm upgrade --install monitoring prometheus-community/kube-prometheus-stack \
