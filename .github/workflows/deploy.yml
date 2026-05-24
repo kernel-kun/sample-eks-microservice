@@ -26,7 +26,7 @@ on:
         description: AWS secret access key (masked)
         required: true
       aws_session_token:
-        description: AWS session token (masked; only needed for short-lived/lab creds)
+        description: 'AWS session token — optional, leave blank for long-lived IAM keys (masked)'
         required: false
         default: ""
 
