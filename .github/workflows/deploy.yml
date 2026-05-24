@@ -1,24 +1,41 @@
 name: deploy
 
-# Manual deploy. The cluster comes from a fresh O'Reilly lab account each
-# demo, so AWS creds are passed in as masked inputs rather than stored as
-# secrets. Inputs are masked via `add-mask` in the first step.
+# One-button apply/destroy of the whole stack: VPC + EKS (Terraform), then the
+# three Helm releases. Static AWS credentials are passed in as masked inputs;
+# the AWS account this targets is treated as ephemeral.
 
 on:
   workflow_dispatch:
     inputs:
+      action:
+        description: apply (provision + deploy) or destroy (uninstall + tear down)
+        required: true
+        type: choice
+        default: apply
+        options:
+          - apply
+          - destroy
+      infra_only:
+        description: Skip the helm stage on apply / skip helm uninstall on destroy
+        required: false
+        type: boolean
+        default: false
       aws_region:
-        description: AWS region (must match the EKS cluster)
+        description: AWS region
         required: true
         default: us-east-1
       cluster_name:
-        description: EKS cluster name (matches Terraform output cluster_name)
+        description: EKS cluster name (must match Terraform var.cluster_name)
         required: true
         default: sample-eks
       image_tag:
-        description: Microservice image tag (e.g. sha-abc1234, latest)
-        required: true
+        description: Microservice image tag (apply only — e.g. sha-abc1234, latest)
+        required: false
         default: latest
+      tfstate_bucket:
+        description: 'S3 bucket for Terraform state — leave blank to derive: sample-eks-tfstate-<account-id>'
+        required: false
+        default: ""
       aws_access_key_id:
         description: AWS access key ID (masked)
         required: true
@@ -33,8 +50,14 @@ on:
 permissions:
   contents: read
 
+env:
+  TFSTATE_KEY: envs/dev/terraform.tfstate
+  TF_INPUT: "false"
+  TF_IN_AUTOMATION: "true"
+
 jobs:
-  deploy:
+  apply:
+    if: inputs.action == 'apply'
     runs-on: ubuntu-latest
     steps:
       - name: Mask credentials
@@ -60,6 +83,51 @@ jobs:
           aws-secret-access-key: ${{ inputs.aws_secret_access_key }}
           aws-session-token: ${{ inputs.aws_session_token }}
 
+      - name: Resolve state bucket
+        id: state
+        run: |
+          bucket="${{ inputs.tfstate_bucket }}"
+          if [[ -z "$bucket" ]]; then
+            account=$(aws sts get-caller-identity --query Account --output text)
+            bucket="sample-eks-tfstate-${account}"
+          fi
+          echo "bucket=$bucket" >> "$GITHUB_OUTPUT"
+          echo "Terraform state bucket: $bucket"
+
+      - name: Bootstrap state bucket
+        run: infra/bootstrap/bootstrap.sh "${{ steps.state.outputs.bucket }}" "${{ inputs.aws_region }}"
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.10.5
+          terraform_wrapper: false
+
+      - name: Terraform init
+        working-directory: infra/envs/dev
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ steps.state.outputs.bucket }}" \
+            -backend-config="region=${{ inputs.aws_region }}" \
+            -backend-config="key=$TFSTATE_KEY"
+
+      - name: Terraform apply
+        working-directory: infra/envs/dev
+        run: |
+          terraform apply -auto-approve \
+            -var "region=${{ inputs.aws_region }}" \
+            -var "cluster_name=${{ inputs.cluster_name }}"
+
+      - name: Capture Terraform outputs
+        id: tf
+        working-directory: infra/envs/dev
+        run: |
+          {
+            echo "vpc_id=$(terraform output -raw vpc_id)"
+            echo "role_arn=$(terraform output -raw alb_controller_role_arn)"
+            echo "kubeconfig_command=$(terraform output -raw kubeconfig_command)"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Update kubeconfig
         run: |
           aws eks update-kubeconfig \
@@ -67,45 +135,25 @@ jobs:
             --name "${{ inputs.cluster_name }}"
           kubectl get nodes
 
+      - name: Stop here if infra_only
+        if: inputs.infra_only
+        run: echo "infra_only=true — skipping helm stage."
+
       - name: Set up Helm
+        if: ${{ !inputs.infra_only }}
         uses: azure/setup-helm@v5
         with:
           version: v3.21.0
 
       - name: Add helm repos
+        if: ${{ !inputs.infra_only }}
         run: |
           helm repo add eks https://aws.github.io/eks-charts
           helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
           helm repo update
 
-      - name: Discover VPC ID and ALB controller role ARN
-        id: discover
-        run: |
-          vpc_id=$(aws eks describe-cluster \
-            --name "${{ inputs.cluster_name }}" \
-            --query 'cluster.resourcesVpcConfig.vpcId' \
-            --output text)
-          # Terraform names the role "<cluster_name>-alb-controller".
-          # Try the deterministic name first; fall back to a prefix match in
-          # case a future change renames it.
-          role_arn=$(aws iam get-role \
-            --role-name "${{ inputs.cluster_name }}-alb-controller" \
-            --query 'Role.Arn' --output text 2>/dev/null || true)
-          if [[ -z "$role_arn" || "$role_arn" == "None" ]]; then
-            role_arn=$(aws iam list-roles \
-              --query "Roles[?starts_with(RoleName, 'aws-load-balancer-controller') || ends_with(RoleName, '-alb-controller')] | [0].Arn" \
-              --output text)
-          fi
-          if [[ -z "$role_arn" || "$role_arn" == "None" ]]; then
-            echo "::error::Could not find ALB controller IAM role. Did 'terraform apply' run?"
-            exit 1
-          fi
-          echo "vpc_id=$vpc_id" >> "$GITHUB_OUTPUT"
-          echo "role_arn=$role_arn" >> "$GITHUB_OUTPUT"
-          echo "VPC: $vpc_id"
-          echo "Role: $role_arn"
-
       - name: Install AWS Load Balancer Controller
+        if: ${{ !inputs.infra_only }}
         run: |
           helm upgrade --install aws-load-balancer-controller \
             eks/aws-load-balancer-controller \
@@ -114,11 +162,12 @@ jobs:
             -f deploy/ingress-controller/values.yaml \
             --set clusterName="${{ inputs.cluster_name }}" \
             --set region="${{ inputs.aws_region }}" \
-            --set vpcId="${{ steps.discover.outputs.vpc_id }}" \
-            --set "serviceAccount.annotations.eks\.amazonaws\.com/role-arn=${{ steps.discover.outputs.role_arn }}" \
+            --set vpcId="${{ steps.tf.outputs.vpc_id }}" \
+            --set "serviceAccount.annotations.eks\.amazonaws\.com/role-arn=${{ steps.tf.outputs.role_arn }}" \
             --wait --timeout 5m
 
       - name: Install kube-prometheus-stack
+        if: ${{ !inputs.infra_only }}
         run: |
           helm upgrade --install monitoring \
             prometheus-community/kube-prometheus-stack \
@@ -128,6 +177,7 @@ jobs:
             --wait --timeout 10m
 
       - name: Install microservice
+        if: ${{ !inputs.infra_only }}
         run: |
           helm upgrade --install microservice \
             deploy/charts/microservice \
@@ -136,6 +186,7 @@ jobs:
             --wait --timeout 5m
 
       - name: Wait for ALB hostname
+        if: ${{ !inputs.infra_only }}
         id: alb
         run: |
           # ALB provisioning takes 90-180s. Poll up to 5 minutes.
@@ -155,6 +206,7 @@ jobs:
           exit 1
 
       - name: Smoke test
+        if: ${{ !inputs.infra_only }}
         env:
           HOST: ${{ steps.alb.outputs.host }}
         run: |
@@ -176,12 +228,15 @@ jobs:
         if: always()
         env:
           HOST: ${{ steps.alb.outputs.host }}
+          BUCKET: ${{ steps.state.outputs.bucket }}
         run: |
           {
-            echo "## Deploy summary"
+            echo "## Apply summary"
             echo
             echo "**Cluster:** \`${{ inputs.cluster_name }}\` (\`${{ inputs.aws_region }}\`)"
+            echo "**State bucket:** \`$BUCKET\`"
             echo "**Image tag:** \`${{ inputs.image_tag }}\`"
+            echo "**Mode:** ${{ inputs.infra_only && 'infra_only (helm skipped)' || 'full apply' }}"
             echo
             if [[ -n "$HOST" ]]; then
               echo "**URL:** http://$HOST"
@@ -197,7 +252,116 @@ jobs:
               echo '```bash'
               echo "kubectl port-forward -n monitoring svc/monitoring-grafana 3000:80"
               echo '```'
+            elif [[ "${{ inputs.infra_only }}" == "true" ]]; then
+              echo "_Infra is up. Re-run with infra_only=false (or run \`make deploy-local\`) to install the helm releases._"
             else
               echo "_ALB hostname not yet available._"
             fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  destroy:
+    if: inputs.action == 'destroy'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mask credentials
+        env:
+          AWS_ACCESS_KEY_ID: ${{ inputs.aws_access_key_id }}
+          AWS_SECRET_ACCESS_KEY: ${{ inputs.aws_secret_access_key }}
+          AWS_SESSION_TOKEN: ${{ inputs.aws_session_token }}
+        run: |
+          echo "::add-mask::$AWS_ACCESS_KEY_ID"
+          echo "::add-mask::$AWS_SECRET_ACCESS_KEY"
+          if [[ -n "$AWS_SESSION_TOKEN" ]]; then
+            echo "::add-mask::$AWS_SESSION_TOKEN"
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-region: ${{ inputs.aws_region }}
+          aws-access-key-id: ${{ inputs.aws_access_key_id }}
+          aws-secret-access-key: ${{ inputs.aws_secret_access_key }}
+          aws-session-token: ${{ inputs.aws_session_token }}
+
+      - name: Resolve state bucket
+        id: state
+        run: |
+          bucket="${{ inputs.tfstate_bucket }}"
+          if [[ -z "$bucket" ]]; then
+            account=$(aws sts get-caller-identity --query Account --output text)
+            bucket="sample-eks-tfstate-${account}"
+          fi
+          echo "bucket=$bucket" >> "$GITHUB_OUTPUT"
+          echo "Terraform state bucket: $bucket"
+
+      - name: Set up Helm
+        if: ${{ !inputs.infra_only }}
+        uses: azure/setup-helm@v5
+        with:
+          version: v3.21.0
+
+      - name: Update kubeconfig
+        if: ${{ !inputs.infra_only }}
+        continue-on-error: true
+        run: |
+          # Best-effort — the cluster may already be gone from a prior destroy.
+          aws eks update-kubeconfig \
+            --region "${{ inputs.aws_region }}" \
+            --name "${{ inputs.cluster_name }}" || true
+
+      - name: Helm uninstall (microservice first so ALB controller drains the ALB)
+        if: ${{ !inputs.infra_only }}
+        continue-on-error: true
+        run: |
+          # Order matters: microservice owns the Ingress, deleting it triggers
+          # the still-running ALB controller to clean up the ALB / target group.
+          # If we destroyed Terraform first, the dangling ALB would block VPC teardown.
+          for pair in "microservice:app" "monitoring:monitoring" "aws-load-balancer-controller:kube-system"; do
+            rel=${pair%:*}; ns=${pair#*:}
+            if helm status "$rel" -n "$ns" >/dev/null 2>&1; then
+              echo "uninstalling $rel/$ns"
+              helm uninstall "$rel" -n "$ns" --wait --timeout 5m || true
+            else
+              echo "$rel/$ns not installed, skipping"
+            fi
+          done
+          # Give AWS a moment to finalize ALB / target-group deletions before
+          # Terraform tries to delete the VPC the ALB lives in.
+          sleep 30
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.10.5
+          terraform_wrapper: false
+
+      - name: Terraform init
+        working-directory: infra/envs/dev
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ steps.state.outputs.bucket }}" \
+            -backend-config="region=${{ inputs.aws_region }}" \
+            -backend-config="key=$TFSTATE_KEY"
+
+      - name: Terraform destroy
+        working-directory: infra/envs/dev
+        run: |
+          terraform destroy -auto-approve \
+            -var "region=${{ inputs.aws_region }}" \
+            -var "cluster_name=${{ inputs.cluster_name }}"
+
+      - name: Summary
+        if: always()
+        env:
+          BUCKET: ${{ steps.state.outputs.bucket }}
+        run: |
+          {
+            echo "## Destroy summary"
+            echo
+            echo "**Cluster:** \`${{ inputs.cluster_name }}\` (\`${{ inputs.aws_region }}\`)"
+            echo "**State bucket:** \`$BUCKET\` _(left in place — drop with \`aws s3 rb s3://$BUCKET --force\` if you want zero footprint)_"
+            echo "**Mode:** ${{ inputs.infra_only && 'infra_only (helm uninstall skipped)' || 'helm uninstall + terraform destroy' }}"
           } >> "$GITHUB_STEP_SUMMARY"

@@ -6,7 +6,22 @@ account in roughly twenty minutes and tears down in ten.
 
 ## Quickstart
 
-End-to-end, fresh AWS account to live URL.
+There are two end-to-end paths from a clean AWS account to a live URL. Pick one.
+
+### Option A — one click in GitHub Actions (recommended)
+
+The `deploy` workflow can provision **and** install everything in a single run.
+
+> Actions → **deploy** → **Run workflow** → leave `action=apply`, paste AWS
+> credentials, click **Run workflow**.
+
+The job creates the S3 state bucket if it doesn't exist, runs
+`terraform apply`, installs the three Helm releases in order, polls for the
+ALB hostname, smoke-tests `/healthz`, and prints the public URL in the run
+summary. To tear everything down, run the same workflow again with
+`action=destroy`.
+
+### Option B — local end-to-end
 
 ```bash
 # 0. Prereqs: aws CLI v2 (authenticated), terraform >= 1.10, kubectl, helm 3.x,
@@ -37,10 +52,6 @@ curl http://<alb-hostname>/healthz
 # 6. Tear it all down.
 make infra-destroy
 ```
-
-The same install runs from CI: trigger `deploy.yml` from the GitHub Actions UI,
-paste the AWS keys, and the workflow installs everything, polls for the ALB,
-smoke-tests `/healthz`, and prints the URL in the run summary.
 
 ## What this is
 
@@ -204,40 +215,59 @@ Run it manually:
 
 ### `.github/workflows/deploy.yml`
 
-Single `workflow_dispatch` job that installs the three Helm releases against
-an existing EKS cluster.
+A `workflow_dispatch` job with two modes — `apply` (provision + deploy) and
+`destroy` (uninstall + tear down). Provisions VPC + EKS via Terraform and
+installs the three Helm releases against the resulting cluster.
 
 Inputs:
 
 | Input                   | Purpose                                                                |
 | ----------------------- | ---------------------------------------------------------------------- |
+| `action`                | `apply` or `destroy`                                                   |
+| `infra_only`            | Apply: skip the Helm stage. Destroy: skip Helm uninstall.               |
 | `aws_region`            | Region the cluster lives in (default `us-east-1`)                      |
 | `cluster_name`          | EKS cluster name (default `sample-eks`)                                |
-| `image_tag`             | Microservice image tag — `latest`, or `sha-…` from `build-image.yml`    |
+| `image_tag`             | Microservice image tag — `latest`, or `sha-…` from `build-image.yml`   |
+| `tfstate_bucket`        | S3 bucket for Terraform state. Blank → derived as `sample-eks-tfstate-<account-id>` |
 | `aws_access_key_id`     | Access key (masked at runtime via `::add-mask::`)                      |
 | `aws_secret_access_key` | Secret (masked)                                                        |
 | `aws_session_token`     | Session token (masked; optional — required for STS, unused for IAM users) |
 
-What the job does:
+What the apply job does:
 
-1. Masks the credentials, then configures the AWS CLI.
-2. `aws eks update-kubeconfig`, then `kubectl get nodes`.
-3. Adds the `eks` and `prometheus-community` Helm repos.
-4. Discovers the cluster's VPC ID and the ALB controller role ARN.
-5. `helm upgrade --install` for `aws-load-balancer-controller` (`kube-system`),
-   `kube-prometheus-stack` (`monitoring`), and `microservice` (`app`),
-   each with `--wait`.
-6. Polls for the ALB hostname (5 min budget) and smoke-tests `/healthz`
-   (5 min budget — target group registration lags hostname assignment).
-7. Writes URL + curl examples to `$GITHUB_STEP_SUMMARY`.
+1. Masks the credentials, configures the AWS CLI, resolves the state bucket name.
+2. Runs `infra/bootstrap/bootstrap.sh` (idempotent — creates the S3 state
+   bucket if it doesn't exist, no-op otherwise).
+3. `terraform init` against that backend, then `terraform apply -auto-approve`.
+4. Captures `vpc_id`, `alb_controller_role_arn`, `kubeconfig_command` from
+   Terraform outputs.
+5. `aws eks update-kubeconfig`, then `kubectl get nodes`.
+6. (skipped if `infra_only=true`) Adds Helm repos and runs
+   `helm upgrade --install` for `aws-load-balancer-controller` (`kube-system`),
+   `kube-prometheus-stack` (`monitoring`), and `microservice` (`app`), each
+   with `--wait`.
+7. Polls for the ALB hostname (5 min budget) and smoke-tests `/healthz`
+   (10 min budget — target group registration lags hostname assignment).
+8. Writes URL + curl examples to `$GITHUB_STEP_SUMMARY`.
+
+What the destroy job does:
+
+1. Masks credentials, resolves the state bucket.
+2. (skipped if `infra_only=true`) `helm uninstall` in dependency order:
+   `microservice` first so the still-running ALB controller cleans up the
+   ALB before Terraform tries to delete the VPC, then `monitoring`, then
+   `aws-load-balancer-controller`. Best-effort — missing releases are
+   skipped.
+3. `terraform init` and `terraform destroy -auto-approve`.
+4. Writes a teardown summary to `$GITHUB_STEP_SUMMARY`.
+
+The S3 state bucket is left in place across destroy runs so re-applies pick
+up where they left off. Drop it manually with
+`aws s3 rb s3://<bucket> --force` for zero footprint.
 
 Static credentials rather than OIDC because the AWS account this runs against
 is treated as ephemeral — the demo doesn't expect a long-lived identity
 provider trust to outlive any single account.
-
-Run it manually:
-
-> Actions → **deploy** → **Run workflow** → fill in cluster + creds.
 
 ## Prerequisites
 
