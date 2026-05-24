@@ -34,8 +34,10 @@ out of scope.
   secret encryption, CloudWatch logs for `api`, `audit`, `authenticator`.
 - A managed node group on AL2023 (`t3.medium`, min/desired/max = 2/2/4) in
   the private subnets.
-- The `vpc-cni`, `coredns`, `kube-proxy`, `aws-ebs-csi-driver`, and
-  `eks-pod-identity-agent` add-ons.
+- The `vpc-cni`, `coredns`, `kube-proxy`, and `eks-pod-identity-agent`
+  add-ons. The EBS CSI driver is intentionally **not** installed — the
+  microservice is stateless and the monitoring stack uses `emptyDir`, so
+  there are no PersistentVolumes to provision.
 - An IAM role + EKS Pod Identity association for the AWS Load Balancer
   Controller. The controller itself is **not** installed by Terraform — that
   belongs to the deploy track.

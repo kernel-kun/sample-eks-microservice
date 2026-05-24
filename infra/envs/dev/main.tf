@@ -71,11 +71,21 @@ module "eks" {
 
   # Versions are left unset on purpose so EKS picks the default that ships
   # with this Kubernetes version. Pinning them here is a portability trap.
+  #
+  # before_compute = true tells the module to install the addon before the
+  # node group is created. vpc-cni is required for kubelet to register the
+  # node as Ready (no CNI → NetworkPluginNotReady → node group hangs in
+  # CREATING until its 35m timeout). kube-proxy is in the same boat for any
+  # workload that talks to a Service. coredns and the pod-identity agent can
+  # install after the nodes are up.
   addons = {
+    vpc-cni = {
+      before_compute = true
+    }
+    kube-proxy = {
+      before_compute = true
+    }
     coredns                = {}
-    kube-proxy             = {}
-    vpc-cni                = {}
-    aws-ebs-csi-driver     = {}
     eks-pod-identity-agent = {}
   }
 
@@ -112,3 +122,4 @@ module "alb_controller_pod_identity" {
     }
   }
 }
+
