@@ -170,7 +170,7 @@ and is intentionally not Terraform-managed — chicken-and-egg with the backend.
 | -------------------------- | ----------------------------------------------------------------------------------- |
 | `main.tf`                  | VPC + EKS modules, IRSA role, IAM policy attach                                     |
 | `outputs.tf`               | `cluster_name`, `kubeconfig_command`, `vpc_id`, `alb_controller_role_arn`, OIDC URL |
-| `providers.tf`             | aws + kubernetes + helm providers (aliased to the cluster after EKS comes up)        |
+| `providers.tf`             | aws + kubernetes + helm providers configured for the EKS cluster once it exists     |
 | `backend.tf`               | S3 backend (partial — bucket/region passed via `-backend-config`)                  |
 | `variables.tf` / `*.tfvars.example` | tunables (region, cluster name, k8s version, instance types, sizes)         |
 | `versions.tf`              | required providers, `terraform >= 1.10`                                              |
