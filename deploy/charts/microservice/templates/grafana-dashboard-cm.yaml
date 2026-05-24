@@ -1,0 +1,15 @@
+{{- if .Values.monitoring.dashboard.enabled -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "microservice.fullname" . }}-grafana-dashboard
+  labels:
+    {{- include "microservice.labels" . | nindent 4 }}
+    # The kube-prometheus-stack Grafana sidecar (kiwigrid/k8s-sidecar)
+    # watches all namespaces for ConfigMaps with this label and provisions
+    # the contained JSON files into Grafana automatically.
+    grafana_dashboard: "1"
+data:
+  microservice.json: |-
+{{ .Files.Get "dashboards/microservice.json" | indent 4 }}
+{{- end }}
