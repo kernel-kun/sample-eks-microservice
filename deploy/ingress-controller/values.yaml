@@ -1,0 +1,44 @@
+# aws-load-balancer-controller
+#
+# Deploy with:
+#   helm upgrade --install aws-load-balancer-controller \
+#     eks/aws-load-balancer-controller \
+#     -n kube-system --version 1.14.0 \
+#     -f deploy/ingress-controller/values.yaml \
+#     --set clusterName=$CLUSTER_NAME \
+#     --set region=$AWS_REGION \
+#     --set vpcId=$VPC_ID
+#
+# clusterName / region / vpcId are passed at install time from the deploy
+# workflow so the same file works for any cluster.
+
+# Use the SA that Terraform pre-created with the Pod Identity association
+# bound to the controller's IAM role. We do NOT let the chart create the SA
+# (its annotations would race with our IRSA-free, Pod-Identity-only setup).
+serviceAccount:
+  create: false
+  name: aws-load-balancer-controller
+
+# Two replicas spread the leader-election load and survive a node roll.
+replicaCount: 2
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 200m
+    memory: 256Mi
+
+# Default ingressClass (`alb`) is what our microservice Ingress targets.
+# Leaving createIngressClassResource=true lets the chart own the IngressClass.
+ingressClass: alb
+createIngressClassResource: true
+
+# Restricted Pod Security Standard.
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  capabilities:
+    drop: ["ALL"]

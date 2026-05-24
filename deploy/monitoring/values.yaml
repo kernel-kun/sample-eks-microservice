@@ -1,0 +1,87 @@
+# kube-prometheus-stack
+#
+# Deploy with:
+#   helm upgrade --install monitoring \
+#     prometheus-community/kube-prometheus-stack \
+#     -n monitoring --create-namespace \
+#     --version 65.5.1 \
+#     -f deploy/monitoring/values.yaml
+#
+# The release name MUST be `monitoring` so the operator's default
+# `release: monitoring` selector matches our microservice ServiceMonitor.
+
+# Disable noisy components we don't need for a take-home demo.
+# kube-state-metrics and node-exporter stay on — the dashboard depends on
+# kube_pod_container_info / kube_deployment_status_replicas_ready.
+alertmanager:
+  enabled: false
+defaultRules:
+  create: false
+
+prometheusOperator:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+prometheus:
+  prometheusSpec:
+    # Pick up ServiceMonitors regardless of namespace/labels — the demo uses
+    # one app-team monitor and we don't want operator selectors to drop it
+    # silently. In a real cluster you'd scope these.
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+    # Keep the disk small — emptyDir suits the disposable lab account
+    # (the cluster has no EBS CSI on purpose).
+    retention: 6h
+    resources:
+      requests:
+        cpu: 100m
+        memory: 512Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+
+grafana:
+  adminPassword: admin  # demo only — rotate or wire to a Secret in production
+  # Sidecar auto-loads ConfigMaps with `grafana_dashboard: "1"`. Our chart
+  # ships the microservice dashboard via that mechanism.
+  sidecar:
+    dashboards:
+      enabled: true
+      label: grafana_dashboard
+      labelValue: "1"
+      searchNamespace: ALL
+    datasources:
+      enabled: true
+  # No persistence — Grafana state is fine to lose between demos. Avoids
+  # needing a CSI driver in the lab account.
+  persistence:
+    enabled: false
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+  # Default datasource is the in-stack Prometheus. The dashboard JSON
+  # references it via the ${DS_PROMETHEUS} variable.
+  service:
+    type: ClusterIP
+
+# We don't run on control-plane components we can't see (managed EKS).
+kubeApiServer:
+  enabled: true
+kubeControllerManager:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeProxy:
+  enabled: true
+kubeEtcd:
+  enabled: false
