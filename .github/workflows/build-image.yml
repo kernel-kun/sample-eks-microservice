@@ -56,13 +56,15 @@ jobs:
             type=raw,value=latest,enable={{is_default_branch}}
             type=ref,event=pr
 
-      - name: Build and push (multi-arch)
+      - name: Build and push
         id: build
         uses: docker/build-push-action@v6
         with:
           context: ./app
           file: ./app/Dockerfile
-          platforms: linux/amd64,linux/arm64
+          # PRs build a single-arch image and load it so Trivy can scan from the
+          # local engine. Pushes to main go multi-arch straight to the registry.
+          platforms: ${{ github.event_name == 'pull_request' && 'linux/amd64' || 'linux/amd64,linux/arm64' }}
           push: ${{ github.event_name != 'pull_request' }}
           load: ${{ github.event_name == 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
@@ -117,5 +119,9 @@ jobs:
             echo
             echo "**Digest:** \`${{ steps.build.outputs.digest }}\`"
             echo
-            echo "**Platforms:** linux/amd64, linux/arm64"
+            if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+              echo "**Platforms:** linux/amd64 (PR — single-arch for local scan)"
+            else
+              echo "**Platforms:** linux/amd64, linux/arm64"
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
