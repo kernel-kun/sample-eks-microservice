@@ -297,6 +297,12 @@ jobs:
           echo "bucket=$bucket" >> "$GITHUB_OUTPUT"
           echo "Terraform state bucket: $bucket"
 
+      - name: Bootstrap state bucket
+        # Idempotent — no-op if the bucket already exists. Running it on destroy
+        # too means a missing bucket yields a clean "nothing to destroy" outcome
+        # instead of an opaque `terraform init` failure.
+        run: infra/bootstrap/bootstrap.sh "${{ steps.state.outputs.bucket }}" "${{ inputs.aws_region }}"
+
       - name: Set up Helm
         if: ${{ !inputs.infra_only }}
         uses: azure/setup-helm@v5
