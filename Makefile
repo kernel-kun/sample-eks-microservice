@@ -69,19 +69,41 @@ chart-lint:     ## helm lint + template render the microservice chart
 chart-template: ## Render the chart to stdout (helpful for diffing)
 	helm template test $(CHART_DIR)
 
-deploy-local:   ## Install ALB controller + monitoring + microservice against the current kube context
+deploy-local:   ## Install ALB controller + monitoring + microservice against the current kube context (auto-recovers stuck pending-install)
 	@if [ -z "$(VPC_ID)" ]; then echo "VPC_ID is required (e.g. make deploy-local VPC_ID=vpc-...)"; exit 1; fi
-	helm repo add eks https://aws.github.io/eks-charts
-	helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
-	helm repo update
+	@set -e; \
+	echo "Discovering ALB controller IAM role ARN..."; \
+	role_arn=$$(aws iam get-role --role-name "$(CLUSTER_NAME)-alb-controller" --query 'Role.Arn' --output text 2>/dev/null || true); \
+	if [ -z "$$role_arn" ] || [ "$$role_arn" = "None" ]; then \
+	  role_arn=$$(aws iam list-roles \
+	    --query "Roles[?starts_with(RoleName, 'aws-load-balancer-controller') || ends_with(RoleName, '-alb-controller')] | [0].Arn" \
+	    --output text); \
+	fi; \
+	if [ -z "$$role_arn" ] || [ "$$role_arn" = "None" ]; then \
+	  echo "Could not find ALB controller IAM role. Did 'terraform apply' run?"; exit 1; \
+	fi; \
+	echo "Role: $$role_arn"; \
+	helm repo add eks https://aws.github.io/eks-charts; \
+	helm repo add prometheus-community https://prometheus-community.github.io/helm-charts; \
+	helm repo update; \
+	for pair in "aws-load-balancer-controller:kube-system" "monitoring:monitoring" "microservice:app"; do \
+	  rel=$${pair%:*}; ns=$${pair#*:}; \
+	  status=$$(helm status $$rel -n $$ns -o json 2>/dev/null | grep -o '"status":"[^"]*"' || true); \
+	  case "$$status" in \
+	    *pending-install*|*pending-upgrade*|*pending-rollback*) \
+	      echo "release $$rel/$$ns is $$status — uninstalling so we can retry"; \
+	      helm uninstall $$rel -n $$ns || true ;; \
+	  esac; \
+	done; \
 	helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
 		-n kube-system --version 1.14.0 \
 		-f deploy/ingress-controller/values.yaml \
 		--set clusterName=$(CLUSTER_NAME) --set region=$(AWS_REGION) --set vpcId=$(VPC_ID) \
-		--wait --timeout 5m
+		--set "serviceAccount.annotations.eks\.amazonaws\.com/role-arn=$$role_arn" \
+		--wait --timeout 5m; \
 	helm upgrade --install monitoring prometheus-community/kube-prometheus-stack \
 		-n monitoring --create-namespace --version 85.3.0 \
-		-f deploy/monitoring/values.yaml --wait --timeout 10m
+		-f deploy/monitoring/values.yaml --wait --timeout 10m; \
 	helm upgrade --install microservice $(CHART_DIR) \
 		-n app --create-namespace --wait --timeout 5m
 

@@ -105,6 +105,13 @@ The chart is intentionally small. The values that matter day-to-day:
   selector is `release: <release-name>`.
 - `monitoring.dashboard.enabled` — toggle the Grafana dashboard ConfigMap.
 
+The AWS Load Balancer Controller chart (`deploy/ingress-controller/values.yaml`)
+gets its IAM role from the `alb_controller_role_arn` Terraform output via an
+`eks.amazonaws.com/role-arn` annotation on the ServiceAccount. Both
+`make deploy-local` and the deploy workflow discover the role ARN at install
+time and pass it through `--set` — the values file itself doesn't hardcode
+anything account-scoped.
+
 Everything is wired through Downward API so the app's `pydantic-settings`
 config picks up `POD_NAME`, `POD_IP`, `POD_NAMESPACE`, `NODE_NAME`. The pod
 runs under the Restricted Pod Security Standard: non-root, read-only root
@@ -143,3 +150,12 @@ kubectl -n monitoring port-forward svc/monitoring-kube-prometheus-prometheus 909
 - Health check fails after the ALB hostname appears — ALB target group
   registration lags hostname propagation. Give it another minute; the
   workflow already retries `/healthz` for 5 minutes.
+- ALB controller can't fetch AWS creds — the controller role uses IRSA, so
+  the chart's ServiceAccount must carry the `eks.amazonaws.com/role-arn`
+  annotation. Both deploy paths set it via `--set` from the
+  `alb_controller_role_arn` Terraform output; if you ever install the chart
+  directly, do the same. Verify with
+  `kubectl -n kube-system get sa aws-load-balancer-controller -o yaml`.
+- Helm release stuck in `pending-install` after a Ctrl+C —
+  `make deploy-local` auto-recovers (uninstalls then reinstalls). For an
+  ad-hoc fix: `helm uninstall <release> -n <ns>` then re-run.

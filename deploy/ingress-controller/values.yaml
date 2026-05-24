@@ -7,18 +7,20 @@
 #     -f deploy/ingress-controller/values.yaml \
 #     --set clusterName=$CLUSTER_NAME \
 #     --set region=$AWS_REGION \
-#     --set vpcId=$VPC_ID
+#     --set vpcId=$VPC_ID \
+#     --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"=$ROLE_ARN
 #
-# clusterName / region / vpcId are passed at install time from the deploy
-# workflow so the same file works for any cluster.
+# clusterName / region / vpcId / role ARN are passed at install time from the
+# deploy workflow so the same file works for any cluster.
 
-# EKS Pod Identity binds (namespace, sa_name) -> IAM role at the cluster
-# level — it does NOT create the SA. So we let the chart create it. No
-# eks.amazonaws.com/role-arn annotation is needed; that's an IRSA thing,
-# and Terraform set us up for Pod Identity instead.
+# IRSA. The `eks.amazonaws.com/role-arn` annotation is injected at install
+# time from the alb_controller_role_arn TF output via --set — see the deploy
+# workflow and `make deploy-local`. Don't hardcode it here; it's
+# account-scoped.
 serviceAccount:
   create: true
   name: aws-load-balancer-controller
+  annotations: {}
 
 # Two replicas spread the leader-election load and survive a node roll.
 replicaCount: 2
