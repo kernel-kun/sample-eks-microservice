@@ -17,15 +17,12 @@ artifacts and can be reviewed, applied, or torn down on its own:
   (3 AZs, per-AZ NAT) and an EKS cluster (managed node group on AL2023, EKS
   Pod Identity, the standard add-ons), plus the IAM scaffolding the AWS Load
   Balancer Controller needs. Remote state in S3 with native locking.
-- **`deploy/`** _(planned)_ — Helm chart for the service (Deployment, Service,
+- **`deploy/`** _(shipped)_ — Helm chart for the service (Deployment, Service,
   Ingress backed by an ALB, ServiceAccount, ServiceMonitor, Grafana dashboard
   ConfigMap), values for the upstream `aws-load-balancer-controller` and
   `kube-prometheus-stack` charts, and a single `workflow_dispatch` GitHub
   Actions workflow that installs everything in order and surfaces the public
   ALB URL in the run summary.
-
-> **Status:** `app/` and `infra/` are in place. `deploy/` lands in a follow-up
-> PR; its directory and workflow do not yet exist.
 
 The intent is a reference small enough that every moving part can be read in
 one sitting, but realistic enough that the same shape scales up: the service
@@ -91,7 +88,21 @@ walkthrough, common pitfalls, and what each module produces.
 
 ### Deploy
 
-_Coming with the deploy track._
+The deploy is one `workflow_dispatch` away. From the GitHub Actions UI, run
+`deploy.yml` and paste the AWS access key / secret / session token from the
+lab account along with the cluster name and image tag. The workflow installs
+the AWS Load Balancer Controller, kube-prometheus-stack, and the microservice
+chart, waits for the ALB hostname, smoke-tests `/healthz`, and prints the
+public URL in the run summary.
+
+To run the same install locally against an existing kube context:
+
+```bash
+make chart-lint                            # helm lint + template
+make deploy-local VPC_ID=vpc-...           # installs all three releases
+```
+
+Long-form walkthrough lives in `deploy/README.md`.
 
 ## Prerequisites
 

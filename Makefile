@@ -57,12 +57,33 @@ infra-destroy:  ## terraform destroy for envs/dev
 	terraform -chdir=$(INFRA_DIR) destroy
 
 # ---------------------------------------------------------------- deploy
-.PHONY: chart-lint deploy-local
-chart-lint:     ## helm lint the microservice chart
-	@echo "TODO: filled in by the deploy track"
+CHART_DIR    ?= deploy/charts/microservice
+CLUSTER_NAME ?= sample-eks
+VPC_ID       ?=
 
-deploy-local:   ## install all charts against the current kube context
-	@echo "TODO: filled in by the deploy track"
+.PHONY: chart-lint chart-template deploy-local
+chart-lint:     ## helm lint + template render the microservice chart
+	helm lint $(CHART_DIR)
+	helm template test $(CHART_DIR) > /dev/null
+
+chart-template: ## Render the chart to stdout (helpful for diffing)
+	helm template test $(CHART_DIR)
+
+deploy-local:   ## Install ALB controller + monitoring + microservice against the current kube context
+	@if [ -z "$(VPC_ID)" ]; then echo "VPC_ID is required (e.g. make deploy-local VPC_ID=vpc-...)"; exit 1; fi
+	helm repo add eks https://aws.github.io/eks-charts
+	helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+	helm repo update
+	helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
+		-n kube-system --version 1.14.0 \
+		-f deploy/ingress-controller/values.yaml \
+		--set clusterName=$(CLUSTER_NAME) --set region=$(AWS_REGION) --set vpcId=$(VPC_ID) \
+		--wait --timeout 5m
+	helm upgrade --install monitoring prometheus-community/kube-prometheus-stack \
+		-n monitoring --create-namespace --version 65.5.1 \
+		-f deploy/monitoring/values.yaml --wait --timeout 10m
+	helm upgrade --install microservice $(CHART_DIR) \
+		-n app --create-namespace --wait --timeout 5m
 
 # ---------------------------------------------------------------- meta
 .PHONY: help
