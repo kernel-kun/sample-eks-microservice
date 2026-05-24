@@ -34,6 +34,6 @@ All knobs are environment variables (`pydantic-settings`):
 make app-install        # one-time: create .venv, install deps
 make app-test           # pytest
 make app-run            # uvicorn on http://127.0.0.1:8080
-make image              # docker buildx --load -t sample-service:dev app/
+make image              # docker buildx build --load -t sample-service:dev app/
 docker run --rm -p 8080:8080 sample-service:dev
 ```
