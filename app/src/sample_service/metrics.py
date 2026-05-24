@@ -33,9 +33,7 @@ class PrometheusMiddleware:
             await self.app(scope, receive, send)
             return
 
-        request = Request(scope)
-        method = request.method
-        path = _route_path(request)
+        method = scope.get("method", "")
         start = time.perf_counter()
         status_code = 500
 
@@ -49,15 +47,18 @@ class PrometheusMiddleware:
             await self.app(scope, receive, send_wrapper)
         finally:
             duration = time.perf_counter() - start
+            # Resolve the route *after* dispatch — Starlette's Router populates
+            # scope["route"] during request handling, not before.
+            path = _route_path(scope)
             REQUEST_COUNT.labels(method, path, str(status_code)).inc()
             REQUEST_DURATION.labels(method, path).observe(duration)
 
 
-def _route_path(request: Request) -> str:
-    route = request.scope.get("route")
+def _route_path(scope) -> str:
+    route = scope.get("route")
     if route is not None and getattr(route, "path", None):
         return route.path
-    return request.url.path
+    return scope.get("path", "")
 
 
 def metrics_response(_: Request) -> Response:

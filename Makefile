@@ -9,8 +9,8 @@ IMAGE_TAG  ?= dev
 app-install:    ## Create venv and install app + dev deps
 	cd $(APP_DIR) && python3 -m venv .venv && .venv/bin/pip install --upgrade pip && .venv/bin/pip install -e ".[dev]"
 
-app-run:        ## Run the service locally on :8080
-	cd $(APP_DIR) && .venv/bin/uvicorn sample_service.main:app --host 0.0.0.0 --port 8080
+app-run:        ## Run the service locally on 127.0.0.1:8080
+	cd $(APP_DIR) && .venv/bin/uvicorn sample_service.main:app --host 127.0.0.1 --port 8080
 
 app-test:       ## Run pytest
 	cd $(APP_DIR) && .venv/bin/pytest -q
