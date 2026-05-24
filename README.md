@@ -282,3 +282,59 @@ provider trust to outlive any single account.
 - `app/README.md` — endpoints, env vars, local dev
 - `infra/README.md` — what each module produces, destroy notes
 - `deploy/README.md` — three releases, what to override on the chart
+
+## Reference: what gets created
+
+Screenshots from a real `apply` run, roughly bottom-up.
+
+**Terraform state bucket (S3).** `sample-eks-tfstate-<account-id>`, with the
+`envs/dev/terraform.tfstate` object and the matching `.tflock` lock file
+(native S3 locking, no DynamoDB).
+
+<img src="images/26-05-24_firefox_2587.png" width="900" alt="S3 state bucket" />
+
+**VPC + subnets.** `10.0.0.0/16` across three AZs — three public `/20` subnets
+(ALBs, NATs) and three private `/19` subnets (worker nodes), plus the route
+tables and the IGW/NAT network connections.
+
+<img src="images/26-05-24_firefox_2586.png" width="900" alt="VPC dashboard" />
+
+**Cluster CloudWatch log group.** `/aws/eks/sample-eks/cluster` — `api`,
+`audit`, `authenticator` streams.
+
+<img src="images/26-05-24_firefox_2588.png" width="900" alt="CloudWatch log groups" />
+
+**Access entries.** IRSA role for the ALB controller, the managed node group
+role, and the cluster-creator admin entry.
+
+<img src="images/26-05-24_firefox_2592.png" width="900" alt="EKS access entries" />
+
+**Managed node group.** Kubernetes 1.34, AL2023 AMI, `t3.small`, capacity
+min/desired/max = 2/2/4.
+
+<img src="images/26-05-24_firefox_2593.png" width="900" alt="EKS node group" />
+
+**EC2 instances backing the nodegroup.** Two `t3.small` in `us-east-1a` and
+`us-east-1b`, 3/3 status checks passing.
+
+<img src="images/26-05-24_firefox_2590.png" width="900" alt="EC2 instances" />
+
+**Cluster compute view.** Nodes Ready, kubelet registered.
+
+<img src="images/26-05-24_firefox_2594.png" width="900" alt="EKS compute view" />
+
+**Pods across namespaces (k9s).** Microservice in `app`, ALB controller +
+core add-ons in `kube-system`, the Prometheus stack in `monitoring`.
+
+<img src="images/26-05-24_WindowsTerminal_2596.png" width="900" alt="k9s pods view" />
+
+**Public URL.** ALB hostname resolves; `GET /` returns the pod metadata
+shape the app advertises.
+
+<img src="images/26-05-24_firefox_2598.png" width="900" alt="Microservice public URL response" />
+
+**Grafana dashboard.** `Sample Microservice` — Up/Pods Ready/Container
+Restarts/Image header tiles, request rate, latency, error ratio,
+CPU/memory.
+
+<img src="images/26-05-24_2597.png" width="900" alt="Grafana dashboard" />
