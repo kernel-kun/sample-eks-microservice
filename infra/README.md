@@ -1,157 +1,79 @@
 # infra
 
-Terraform that provisions the AWS network and EKS cluster the microservice
-runs on. The deploy track (`deploy/`) consumes the outputs from here.
+Terraform that provisions the VPC and EKS cluster the microservice runs on.
+Outputs here are consumed by `deploy/`. Only one environment ships
+(`envs/dev/`); promotion to staging/prod is out of scope.
 
-## Layout
-
-```
-infra/
-├── bootstrap/
-│   └── bootstrap.sh        # one-time S3 state bucket setup
-└── envs/
-    └── dev/
-        ├── backend.tf      # S3 backend, partial config
-        ├── main.tf         # vpc + eks + eks-pod-identity modules
-        ├── outputs.tf      # what the deploy pipeline reads
-        ├── providers.tf    # aws + kubernetes + helm providers
-        ├── variables.tf
-        ├── versions.tf
-        └── terraform.tfvars.example
-```
-
-Only one environment ships (`envs/dev/`). Promotion to staging/prod is
-out of scope.
+The architecture diagram and per-resource design notes live in the root
+`README.md`. This file covers what to run and what each output is for.
 
 ## What gets created
 
-- A `10.0.0.0/16` VPC across 3 AZs with one NAT gateway per AZ.
-- Three public `/20` subnets (for ALBs and the NATs) and three private `/19`
-  subnets (for the worker nodes). Both sets carry the
-  `kubernetes.io/role/{elb,internal-elb}` and `kubernetes.io/cluster/*=shared`
-  tags the AWS Load Balancer Controller looks for.
-- An EKS cluster on Kubernetes 1.34, public + private API endpoint, KMS
-  secret encryption, CloudWatch logs for `api`, `audit`, `authenticator`.
-- A managed node group on AL2023 (`t3.medium`, min/desired/max = 2/2/4) in
-  the private subnets.
-- The `vpc-cni`, `coredns`, `kube-proxy`, and `eks-pod-identity-agent`
-  add-ons. EBS CSI is omitted; nothing in the demo needs PVs.
-- An IAM role + EKS Pod Identity association for the AWS Load Balancer
-  Controller. Controller install lives in the deploy track.
+- A `10.0.0.0/16` VPC across 3 AZs, three public `/20` subnets and three
+  private `/19` subnets, one NAT gateway per AZ.
+- EKS cluster on Kubernetes 1.34, public + private API endpoint, KMS secret
+  encryption, CloudWatch logs for `api`/`audit`/`authenticator`.
+- Managed node group on AL2023 (`t3.medium`, 2/2/4) in private subnets only.
+- The `vpc-cni`, `kube-proxy`, `coredns` add-ons. EBS CSI is omitted (the
+  demo never asks for a PV) and `eks-pod-identity-agent` is omitted on
+  purpose — the ALB controller uses **IRSA**, and adding the agent injects
+  Pod Identity env vars that override the IRSA credential path.
+- An IAM role + IAM policy for the AWS Load Balancer Controller. Trust is
+  scoped to `system:serviceaccount:kube-system:aws-load-balancer-controller`
+  via the cluster's OIDC provider. The IAM policy is vendored from the
+  upstream chart's matching tag (`infra/policies/alb-controller.json`,
+  refresh when bumping the chart `--version`).
 
-## Prerequisites
-
-- Terraform `>= 1.10` (S3 native locking via `use_lockfile`)
-- AWS CLI v2, authenticated against the target account (`aws sts get-caller-identity` works)
-- Permissions to create VPCs, EKS clusters, IAM roles, KMS keys, S3 buckets
-
-## Bootstrap (one-time per AWS account)
-
-The S3 bucket that holds Terraform state must exist before
-`terraform init` can configure the backend. `bootstrap.sh` creates it
-with versioning, SSE-S3 encryption, and public access blocked.
+## Run
 
 ```bash
-infra/bootstrap/bootstrap.sh sample-eks-microservice-tfstate us-east-1
-```
+# 0. Authenticate. The aws provider also accepts allowed_account_ids — set
+#    it in terraform.tfvars to harden against pointing at the wrong account.
+aws sts get-caller-identity
 
-The script is idempotent — re-running it is a no-op.
-
-## Init, plan, apply
-
-```bash
-# Replace bucket/region with whatever you used above.
-terraform -chdir=infra/envs/dev init \
-  -backend-config="bucket=sample-eks-microservice-tfstate" \
-  -backend-config="region=us-east-1" \
-  -backend-config="key=envs/dev/terraform.tfstate"
-
-terraform -chdir=infra/envs/dev plan
-terraform -chdir=infra/envs/dev apply
-```
-
-Wall-clock time on a clean account: ~15 minutes (cluster + node group
-warmup dominates).
-
-When the apply finishes, point `kubectl` at it:
-
-```bash
-$(terraform -chdir=infra/envs/dev output -raw kubeconfig_command)
-kubectl get nodes
-kubectl get pods -A
-```
-
-## Full demo run against a fresh account
-
-Used when validating end-to-end against a short-lived AWS account (e.g. an
-O'Reilly lab that lasts an hour). Wall-clock budget on the happy path is
-roughly: bootstrap+init ~1 min, apply ~15 min, verify ~1 min, destroy
-~10–12 min. Start with at least 45 min left on the lab clock.
-
-```bash
-# 1. Point at the lab account.
-export AWS_PROFILE=<the profile from ~/.aws/config>
-aws sts get-caller-identity                          # confirm the account/arn
-
-# 2. S3 buckets are global; embed the account id so re-runs don't collide.
+# 1. State bucket. S3 names are global, so embed the account id.
 export TFSTATE_BUCKET=sample-eks-tfstate-$(aws sts get-caller-identity --query Account --output text)
 export AWS_REGION=us-east-1
+make infra-bootstrap                       # idempotent
 
-# 3. Bring it up.
-make infra-bootstrap                                 # idempotent, ~20s
+# 2. Init / validate / plan / apply.
 make infra-init
-make infra-validate                                  # fmt + validate, no AWS calls
-make infra-plan                                      # eyeball the diff
-make infra-apply                                     # type 'yes', ~15 min
+make infra-validate                        # fmt + validate (after init)
+make infra-plan
+make infra-apply                           # ~15 min on a clean account
 
-# 4. Wire kubectl, run sanity checks.
+# 3. Wire kubectl and verify.
 $(terraform -chdir=infra/envs/dev output -raw kubeconfig_command)
 make infra-verify
 
-# 5. Idempotency probe — must say "No changes".
+# 4. Idempotency probe — must say "No changes".
 make infra-plan
-
-# 6. Tear down.
-make infra-destroy
-
-# 7. (optional) drop the state bucket too.
-aws s3 rb s3://$TFSTATE_BUCKET --force
 ```
 
-If `apply` errors on EIP quota (default is 5 per region, we ask for 3), set
-`single_nat_gateway = true` in `main.tf` for the demo run only — don't
-commit that change.
+`make infra-destroy` tears the cluster and VPC back down. The S3 state bucket
+is left behind on purpose; drop it manually with `aws s3 rb s3://$TFSTATE_BUCKET --force`
+when you really want zero footprint.
 
-## Destroy
+## Outputs the deploy track reads
 
-```bash
-terraform -chdir=infra/envs/dev destroy
-```
+| Output                    | Used for                                                          |
+| ------------------------- | ----------------------------------------------------------------- |
+| `cluster_name`            | `aws eks update-kubeconfig`, helm `--set clusterName`             |
+| `region`                  | helm `--set region`                                               |
+| `vpc_id`                  | helm `--set vpcId` for the ALB controller                         |
+| `alb_controller_role_arn` | annotation on the controller's ServiceAccount (IRSA)              |
+| `oidc_provider_arn` / `oidc_provider_url` | building further IRSA roles                       |
+| `kubeconfig_command`      | shell-eval to point `kubectl` at the cluster                      |
 
-Terraform tears down the cluster, node group, and VPC. The state bucket
-itself is left behind on purpose — drop it manually if you really want
-zero footprint:
+## Notes
 
-```bash
-aws s3 rb s3://sample-eks-microservice-tfstate --force
-```
-
-## Common pitfalls
-
-If the ALB controller can't find subnets to use, the
-`kubernetes.io/role/elb` / `kubernetes.io/cluster/<name>=shared` tags are
-probably wrong; they're set in `main.tf` and the cluster name has to match
-what the chart references.
-
-The per-AZ NAT pattern costs around $32/mo per AZ. Fine for production,
-expensive for a long-running dev cluster — flip `single_nat_gateway = true`
-in the vpc module if you don't care about AZ-level isolation.
-
-The S3 backend uses `use_lockfile = true`, which needs Terraform 1.10+.
-That's why `versions.tf` pins `>= 1.10` rather than `>= 1.9`; older
-versions silently skip the lock and will eventually corrupt state if two
-applies overlap.
-
-Whoever runs `terraform apply` first becomes cluster-admin
-(`enable_cluster_creator_admin_permissions = true`). Worth knowing if
-you're planning to apply from CI.
+- Whoever runs `terraform apply` first becomes cluster-admin — the module
+  is configured with `enable_cluster_creator_admin_permissions = true`.
+  Worth knowing if you're planning to apply from CI under a different role.
+- The S3 backend uses `use_lockfile = true` (Terraform 1.10+). Older
+  versions silently skip the lock and will eventually corrupt state if two
+  applies overlap.
+- Per-AZ NAT runs ~$32/mo per AZ. Flip `single_nat_gateway = true` in
+  `main.tf` if you don't care about AZ-level egress isolation.
+- EIPs default to a soft quota of 5 per region; this stack asks for 3. If
+  apply errors there, request a quota bump or set `single_nat_gateway = true`.
