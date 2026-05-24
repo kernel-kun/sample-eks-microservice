@@ -1,0 +1,182 @@
+name: deploy
+
+# Manual deploy. The cluster comes from a fresh O'Reilly lab account each
+# demo, so AWS creds are passed in as masked inputs rather than stored as
+# secrets. Inputs are masked via `add-mask` in the first step.
+
+on:
+  workflow_dispatch:
+    inputs:
+      aws_region:
+        description: AWS region (must match the EKS cluster)
+        required: true
+        default: us-east-1
+      cluster_name:
+        description: EKS cluster name (matches Terraform output cluster_name)
+        required: true
+        default: sample-eks
+      image_tag:
+        description: Microservice image tag (e.g. sha-abc1234, latest)
+        required: true
+        default: latest
+      aws_access_key_id:
+        description: AWS access key ID (masked)
+        required: true
+      aws_secret_access_key:
+        description: AWS secret access key (masked)
+        required: true
+      aws_session_token:
+        description: AWS session token (masked, lab creds need this)
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mask credentials
+        env:
+          AWS_ACCESS_KEY_ID: ${{ inputs.aws_access_key_id }}
+          AWS_SECRET_ACCESS_KEY: ${{ inputs.aws_secret_access_key }}
+          AWS_SESSION_TOKEN: ${{ inputs.aws_session_token }}
+        run: |
+          echo "::add-mask::$AWS_ACCESS_KEY_ID"
+          echo "::add-mask::$AWS_SECRET_ACCESS_KEY"
+          echo "::add-mask::$AWS_SESSION_TOKEN"
+
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ inputs.aws_region }}
+          aws-access-key-id: ${{ inputs.aws_access_key_id }}
+          aws-secret-access-key: ${{ inputs.aws_secret_access_key }}
+          aws-session-token: ${{ inputs.aws_session_token }}
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig \
+            --region "${{ inputs.aws_region }}" \
+            --name "${{ inputs.cluster_name }}"
+          kubectl get nodes
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.16.3
+
+      - name: Add helm repos
+        run: |
+          helm repo add eks https://aws.github.io/eks-charts
+          helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+          helm repo update
+
+      - name: Discover VPC ID
+        id: vpc
+        run: |
+          vpc_id=$(aws eks describe-cluster \
+            --name "${{ inputs.cluster_name }}" \
+            --query 'cluster.resourcesVpcConfig.vpcId' \
+            --output text)
+          echo "vpc_id=$vpc_id" >> "$GITHUB_OUTPUT"
+          echo "VPC: $vpc_id"
+
+      - name: Install AWS Load Balancer Controller
+        run: |
+          helm upgrade --install aws-load-balancer-controller \
+            eks/aws-load-balancer-controller \
+            --namespace kube-system \
+            --version 1.14.0 \
+            -f deploy/ingress-controller/values.yaml \
+            --set clusterName="${{ inputs.cluster_name }}" \
+            --set region="${{ inputs.aws_region }}" \
+            --set vpcId="${{ steps.vpc.outputs.vpc_id }}" \
+            --wait --timeout 5m
+
+      - name: Install kube-prometheus-stack
+        run: |
+          helm upgrade --install monitoring \
+            prometheus-community/kube-prometheus-stack \
+            --namespace monitoring --create-namespace \
+            --version 65.5.1 \
+            -f deploy/monitoring/values.yaml \
+            --wait --timeout 10m
+
+      - name: Install microservice
+        run: |
+          helm upgrade --install microservice \
+            deploy/charts/microservice \
+            --namespace app --create-namespace \
+            --set image.tag="${{ inputs.image_tag }}" \
+            --wait --timeout 5m
+
+      - name: Wait for ALB hostname
+        id: alb
+        run: |
+          # ALB provisioning takes 90-180s. Poll up to 5 minutes.
+          for i in $(seq 1 60); do
+            host=$(kubectl get ingress microservice -n app \
+              -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)
+            if [[ -n "$host" ]]; then
+              echo "host=$host" >> "$GITHUB_OUTPUT"
+              echo "ALB hostname: $host"
+              exit 0
+            fi
+            echo "[$i/60] waiting for ALB hostname..."
+            sleep 5
+          done
+          echo "::error::ALB hostname did not appear within 5 minutes"
+          kubectl describe ingress microservice -n app
+          exit 1
+
+      - name: Smoke test
+        env:
+          HOST: ${{ steps.alb.outputs.host }}
+        run: |
+          # ALB target registration lags hostname assignment. Retry until /healthz returns 200.
+          for i in $(seq 1 30); do
+            code=$(curl -sS -o /dev/null -w '%{http_code}' "http://$HOST/healthz" || true)
+            if [[ "$code" == "200" ]]; then
+              echo "/healthz returned 200"
+              curl -sS "http://$HOST/" | head -c 200
+              exit 0
+            fi
+            echo "[$i/30] /healthz returned $code, retrying..."
+            sleep 10
+          done
+          echo "::error::/healthz never returned 200"
+          exit 1
+
+      - name: Summary
+        if: always()
+        env:
+          HOST: ${{ steps.alb.outputs.host }}
+        run: |
+          {
+            echo "## Deploy summary"
+            echo
+            echo "**Cluster:** \`${{ inputs.cluster_name }}\` (\`${{ inputs.aws_region }}\`)"
+            echo "**Image tag:** \`${{ inputs.image_tag }}\`"
+            echo
+            if [[ -n "$HOST" ]]; then
+              echo "**URL:** http://$HOST"
+              echo
+              echo "Try it:"
+              echo '```bash'
+              echo "curl http://$HOST/"
+              echo "curl http://$HOST/healthz"
+              echo "curl http://$HOST/metrics"
+              echo '```'
+              echo
+              echo "Grafana (port-forward, admin/admin):"
+              echo '```bash'
+              echo "kubectl port-forward -n monitoring svc/monitoring-grafana 3000:80"
+              echo '```'
+            else
+              echo "_ALB hostname not yet available._"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
