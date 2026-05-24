@@ -88,22 +88,22 @@ multi-environment promotion.
         └──────────────────────────┘
                      │ target-type: ip
                      ▼
-   ┌─────────────────────────────────────────────┐
-   │  EKS cluster (Kubernetes 1.34)              │
-   │                                             │
-   │   namespace: app           namespace: kube-system
-   │   ┌──────────────┐         ┌──────────────────────┐
-   │   │ microservice │         │ aws-load-balancer-    │
-   │   │  (2 pods)    │◀───────▶│   controller (IRSA)   │
-   │   └──────────────┘         └──────────────────────┘
-   │           │                                 │
-   │           ▼                                 │
-   │   namespace: monitoring                    │
-   │   ┌──────────────────────────┐             │
-   │   │ kube-prometheus-stack    │             │
-   │   │  (Prom, Grafana, op.)    │             │
-   │   └──────────────────────────┘             │
-   └─────────────────────────────────────────────┘
+   ┌───────────────────────────────────────────────────────┐
+   │  EKS cluster (Kubernetes 1.34)                        │
+   │                                                       │
+   │   namespace: app           namespace: kube-system     │
+   │   ┌──────────────┐         ┌──────────────────────┐   │
+   │   │ microservice │         │ aws-load-balancer-   │   │
+   │   │  (2 pods)    │◀──────▶│   controller (IRSA)  │   │
+   │   └──────────────┘         └──────────────────────┘   │
+   │           │                                           │
+   │           ▼                                           │
+   │   namespace: monitoring                               │
+   │   ┌──────────────────────────┐                        │
+   │   │ kube-prometheus-stack    │                        │
+   │   │  (Prom, Grafana, op.)    │                        │
+   │   └──────────────────────────┘                        │
+   └───────────────────────────────────────────────────────┘
                      │ private subnets
                      ▼
         ┌──────────────────────────┐
