@@ -78,15 +78,32 @@ jobs:
           helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
           helm repo update
 
-      - name: Discover VPC ID
-        id: vpc
+      - name: Discover VPC ID and ALB controller role ARN
+        id: discover
         run: |
           vpc_id=$(aws eks describe-cluster \
             --name "${{ inputs.cluster_name }}" \
             --query 'cluster.resourcesVpcConfig.vpcId' \
             --output text)
+          # Terraform names the role "<cluster_name>-alb-controller".
+          # Try the deterministic name first; fall back to a prefix match in
+          # case a future change renames it.
+          role_arn=$(aws iam get-role \
+            --role-name "${{ inputs.cluster_name }}-alb-controller" \
+            --query 'Role.Arn' --output text 2>/dev/null || true)
+          if [[ -z "$role_arn" || "$role_arn" == "None" ]]; then
+            role_arn=$(aws iam list-roles \
+              --query "Roles[?starts_with(RoleName, 'aws-load-balancer-controller') || ends_with(RoleName, '-alb-controller')] | [0].Arn" \
+              --output text)
+          fi
+          if [[ -z "$role_arn" || "$role_arn" == "None" ]]; then
+            echo "::error::Could not find ALB controller IAM role. Did 'terraform apply' run?"
+            exit 1
+          fi
           echo "vpc_id=$vpc_id" >> "$GITHUB_OUTPUT"
+          echo "role_arn=$role_arn" >> "$GITHUB_OUTPUT"
           echo "VPC: $vpc_id"
+          echo "Role: $role_arn"
 
       - name: Install AWS Load Balancer Controller
         run: |
@@ -97,7 +114,8 @@ jobs:
             -f deploy/ingress-controller/values.yaml \
             --set clusterName="${{ inputs.cluster_name }}" \
             --set region="${{ inputs.aws_region }}" \
-            --set vpcId="${{ steps.vpc.outputs.vpc_id }}" \
+            --set vpcId="${{ steps.discover.outputs.vpc_id }}" \
+            --set "serviceAccount.annotations.eks\.amazonaws\.com/role-arn=${{ steps.discover.outputs.role_arn }}" \
             --wait --timeout 5m
 
       - name: Install kube-prometheus-stack
