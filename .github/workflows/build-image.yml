@@ -1,0 +1,138 @@
+name: build-image
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'app/**'
+      - '.github/workflows/build-image.yml'
+  pull_request:
+    paths:
+      - 'app/**'
+      - '.github/workflows/build-image.yml'
+  workflow_dispatch:
+    inputs:
+      severity:
+        description: Trivy severity threshold to fail on
+        required: false
+        default: HIGH,CRITICAL
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      security-events: write
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha,prefix=sha-,format=short
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=pr
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: ./app
+          file: ./app/Dockerfile
+          # PRs build a single-arch image and load it so Trivy can scan from the
+          # local engine. Pushes to main go multi-arch straight to the registry.
+          platforms: ${{ github.event_name == 'pull_request' && 'linux/amd64' || 'linux/amd64,linux/arm64' }}
+          push: ${{ github.event_name != 'pull_request' }}
+          load: ${{ github.event_name == 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false
+
+      - name: Pick a tag for scanning
+        id: scan-tag
+        run: |
+          tag=$(echo "${{ steps.meta.outputs.tags }}" | head -n1)
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Trivy scan (table)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ steps.scan-tag.outputs.tag }}
+          format: table
+          output: trivy-table.txt
+          severity: ${{ inputs.severity || 'HIGH,CRITICAL' }}
+          exit-code: '1'
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+
+      - name: Trivy scan (SARIF)
+        if: always()
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ steps.scan-tag.outputs.tag }}
+          format: sarif
+          output: trivy.sarif
+          severity: ${{ inputs.severity || 'HIGH,CRITICAL' }}
+          exit-code: '0'
+          ignore-unfixed: true
+
+      - name: Upload SARIF to code scanning
+        if: always()
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy.sarif
+
+      - name: Build summary
+        if: always()
+        run: |
+          {
+            echo "## Image build"
+            echo
+            echo "**Tags:**"
+            echo '```'
+            echo "${{ steps.meta.outputs.tags }}"
+            echo '```'
+            echo
+            echo "**Digest:** \`${{ steps.build.outputs.digest }}\`"
+            echo
+            if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+              echo "**Platforms:** linux/amd64 (PR — single-arch for local scan)"
+            else
+              echo "**Platforms:** linux/amd64, linux/arm64"
+            fi
+            echo
+            echo "## Trivy scan (HIGH,CRITICAL, fixed)"
+            echo
+            if [[ -s trivy-table.txt ]]; then
+              echo '```'
+              cat trivy-table.txt
+              echo '```'
+            else
+              echo "_No report produced — scan step did not run or produced no output._"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
