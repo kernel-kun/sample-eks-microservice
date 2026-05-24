@@ -47,13 +47,15 @@ The `deploy` workflow has six `workflow_dispatch` inputs:
 | `aws_region`            | Region the EKS cluster lives in (default `us-east-1`)      |
 | `cluster_name`          | EKS cluster name (default `sample-eks` from `infra/`)      |
 | `image_tag`             | Microservice image tag — `latest`, or a `sha-…` from CI    |
-| `aws_access_key_id`     | Lab access key (masked at runtime)                         |
-| `aws_secret_access_key` | Lab secret (masked at runtime)                             |
-| `aws_session_token`     | Lab session token (masked at runtime)                      |
+| `aws_access_key_id`     | Access key (masked at runtime)                             |
+| `aws_secret_access_key` | Secret (masked at runtime)                                 |
+| `aws_session_token`     | Session token (masked; leave blank for long-lived IAM creds) |
 
 Static creds rather than OIDC because the lab account is recreated per demo;
 nothing about it is worth wiring an identity provider for. The first step
-masks all three values via `::add-mask::` before any other action sees them.
+masks the values via `::add-mask::` before any other action sees them. The
+session token is optional — required for STS / lab creds, not needed for
+plain IAM user keys.
 
 The job:
 

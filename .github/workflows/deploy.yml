@@ -26,8 +26,9 @@ on:
         description: AWS secret access key (masked)
         required: true
       aws_session_token:
-        description: AWS session token (masked, lab creds need this)
-        required: true
+        description: AWS session token (masked; only needed for short-lived/lab creds)
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -44,7 +45,9 @@ jobs:
         run: |
           echo "::add-mask::$AWS_ACCESS_KEY_ID"
           echo "::add-mask::$AWS_SECRET_ACCESS_KEY"
-          echo "::add-mask::$AWS_SESSION_TOKEN"
+          if [[ -n "$AWS_SESSION_TOKEN" ]]; then
+            echo "::add-mask::$AWS_SESSION_TOKEN"
+          fi
 
       - name: Checkout
         uses: actions/checkout@v6
