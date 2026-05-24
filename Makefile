@@ -19,21 +19,29 @@ image:          ## Build the container image locally for the host arch
 	docker buildx build --load -t $(IMAGE_NAME):$(IMAGE_TAG) $(APP_DIR)
 
 # ---------------------------------------------------------------- infra
+INFRA_DIR        ?= infra/envs/dev
+TFSTATE_BUCKET   ?= sample-eks-microservice-tfstate
+AWS_REGION       ?= us-east-1
+TFSTATE_KEY      ?= envs/dev/terraform.tfstate
+
 .PHONY: infra-bootstrap infra-init infra-plan infra-apply infra-destroy
 infra-bootstrap: ## Create the S3 state bucket (idempotent)
-	@echo "TODO: filled in by the infra track"
+	infra/bootstrap/bootstrap.sh $(TFSTATE_BUCKET) $(AWS_REGION)
 
 infra-init:     ## terraform init for envs/dev
-	@echo "TODO: filled in by the infra track"
+	terraform -chdir=$(INFRA_DIR) init \
+		-backend-config="bucket=$(TFSTATE_BUCKET)" \
+		-backend-config="region=$(AWS_REGION)" \
+		-backend-config="key=$(TFSTATE_KEY)"
 
 infra-plan:     ## terraform plan for envs/dev
-	@echo "TODO: filled in by the infra track"
+	terraform -chdir=$(INFRA_DIR) plan
 
 infra-apply:    ## terraform apply for envs/dev
-	@echo "TODO: filled in by the infra track"
+	terraform -chdir=$(INFRA_DIR) apply
 
 infra-destroy:  ## terraform destroy for envs/dev
-	@echo "TODO: filled in by the infra track"
+	terraform -chdir=$(INFRA_DIR) destroy
 
 # ---------------------------------------------------------------- deploy
 .PHONY: chart-lint deploy-local

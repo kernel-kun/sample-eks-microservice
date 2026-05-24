@@ -13,7 +13,7 @@ artifacts and can be reviewed, applied, or torn down on its own:
   graceful shutdown, pod metadata via the Kubernetes Downward API. Multi-stage
   Dockerfile, multi-arch image (`linux/amd64`, `linux/arm64`), Trivy scan in
   CI, published to GitHub Container Registry.
-- **`infra/`** _(planned)_ — Terraform to provision a Well-Architected VPC
+- **`infra/`** _(shipped)_ — Terraform to provision a Well-Architected VPC
   (3 AZs, per-AZ NAT) and an EKS cluster (managed node group on AL2023, EKS
   Pod Identity, the standard add-ons), plus the IAM scaffolding the AWS Load
   Balancer Controller needs. Remote state in S3 with native locking.
@@ -24,8 +24,8 @@ artifacts and can be reviewed, applied, or torn down on its own:
   Actions workflow that installs everything in order and surfaces the public
   ALB URL in the run summary.
 
-> **Status:** the `app/` track is in place. `infra/` and `deploy/` land in
-> follow-up PRs; their directories and workflows do not yet exist.
+> **Status:** `app/` and `infra/` are in place. `deploy/` lands in a follow-up
+> PR; its directory and workflow do not yet exist.
 
 The intent is a reference small enough that every moving part can be read in
 one sitting, but realistic enough that the same shape scales up: the service
@@ -74,7 +74,20 @@ and pushed multi-arch to `ghcr.io/kernel-kun/sample-eks-microservice` by
 
 ### Infrastructure
 
-_Coming with the infra track._
+```bash
+# One-time per AWS account: create the S3 bucket that holds Terraform state.
+make infra-bootstrap                       # uses TFSTATE_BUCKET, AWS_REGION
+
+make infra-init                            # terraform init -backend-config=...
+make infra-plan
+make infra-apply                           # ~15 minutes on a clean account
+$(terraform -chdir=infra/envs/dev output -raw kubeconfig_command)
+kubectl get nodes
+```
+
+`make infra-destroy` tears the cluster and VPC back down. The state bucket
+itself is left behind on purpose. See `infra/README.md` for the long-form
+walkthrough, common pitfalls, and what each module produces.
 
 ### Deploy
 
