@@ -228,7 +228,7 @@ What the job does:
    `kube-prometheus-stack` (`monitoring`), and `microservice` (`app`),
    each with `--wait`.
 6. Polls for the ALB hostname (5 min budget) and smoke-tests `/healthz`
-   (10 min budget — target group registration lags hostname assignment).
+   (5 min budget — target group registration lags hostname assignment).
 7. Writes URL + curl examples to `$GITHUB_STEP_SUMMARY`.
 
 Static credentials rather than OIDC because the AWS account this runs against
