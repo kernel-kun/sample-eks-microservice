@@ -19,21 +19,42 @@ image:          ## Build the container image locally for the host arch
 	docker buildx build --load -t $(IMAGE_NAME):$(IMAGE_TAG) $(APP_DIR)
 
 # ---------------------------------------------------------------- infra
-.PHONY: infra-bootstrap infra-init infra-plan infra-apply infra-destroy
+INFRA_DIR        ?= infra/envs/dev
+TFSTATE_BUCKET   ?= sample-eks-microservice-tfstate
+AWS_REGION       ?= us-east-1
+TFSTATE_KEY      ?= envs/dev/terraform.tfstate
+
+.PHONY: infra-bootstrap infra-init infra-validate infra-plan infra-apply infra-verify infra-destroy
 infra-bootstrap: ## Create the S3 state bucket (idempotent)
-	@echo "TODO: filled in by the infra track"
+	infra/bootstrap/bootstrap.sh $(TFSTATE_BUCKET) $(AWS_REGION)
 
 infra-init:     ## terraform init for envs/dev
-	@echo "TODO: filled in by the infra track"
+	terraform -chdir=$(INFRA_DIR) init \
+		-backend-config="bucket=$(TFSTATE_BUCKET)" \
+		-backend-config="region=$(AWS_REGION)" \
+		-backend-config="key=$(TFSTATE_KEY)"
+
+infra-validate: ## terraform fmt -check + validate (run after infra-init)
+	terraform -chdir=$(INFRA_DIR) fmt -check -recursive
+	terraform -chdir=$(INFRA_DIR) validate
 
 infra-plan:     ## terraform plan for envs/dev
-	@echo "TODO: filled in by the infra track"
+	terraform -chdir=$(INFRA_DIR) plan
 
 infra-apply:    ## terraform apply for envs/dev
-	@echo "TODO: filled in by the infra track"
+	terraform -chdir=$(INFRA_DIR) apply
+
+infra-verify:  ## Post-apply sanity: nodes Ready, system pods Running, ALB controller role wired
+	kubectl get nodes
+	kubectl get pods -A
+	@echo
+	@echo "ALB controller ServiceAccount role-arn annotation:"
+	@kubectl -n kube-system get sa aws-load-balancer-controller \
+	  -o jsonpath='{.metadata.annotations.eks\.amazonaws\.com/role-arn}{"\n"}' \
+	  2>/dev/null || echo "  (ServiceAccount not created yet — that's the deploy track's job)"
 
 infra-destroy:  ## terraform destroy for envs/dev
-	@echo "TODO: filled in by the infra track"
+	terraform -chdir=$(INFRA_DIR) destroy
 
 # ---------------------------------------------------------------- deploy
 .PHONY: chart-lint deploy-local
