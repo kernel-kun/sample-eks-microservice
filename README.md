@@ -1,117 +1,254 @@
 # sample-eks-microservice
 
-A tiny Python web application — plus the AWS Terraform infrastructure and the
-GitHub Actions deployment pipeline behind it — that showcases the end-to-end
-shape of running a small microservice on Amazon EKS.
+A small FastAPI service running on Amazon EKS, with the network, cluster, and
+deploy pipeline that gets it there. The whole thing comes up from a clean AWS
+account in roughly twenty minutes and tears down in ten.
 
-The repo is split into three loosely coupled tracks. Each track owns its
-artifacts and can be reviewed, applied, or torn down on its own:
+## Quickstart
 
-- **`app/`** _(shipped)_ — Python FastAPI service modelled on the HTTP-only
-  surface of [stefanprodan/podinfo](https://github.com/stefanprodan/podinfo):
-  structured JSON logs, liveness/readiness probes, Prometheus metrics,
-  graceful shutdown, pod metadata via the Kubernetes Downward API. Multi-stage
-  Dockerfile, multi-arch image (`linux/amd64`, `linux/arm64`), Trivy scan in
-  CI, published to GitHub Container Registry.
-- **`infra/`** _(shipped)_ — Terraform to provision a Well-Architected VPC
-  (3 AZs, per-AZ NAT) and an EKS cluster (managed node group on AL2023, EKS
-  Pod Identity, the standard add-ons), plus the IAM scaffolding the AWS Load
-  Balancer Controller needs. Remote state in S3 with native locking.
-- **`deploy/`** _(shipped)_ — Helm chart for the service (Deployment, Service,
-  Ingress backed by an ALB, ServiceAccount, ServiceMonitor, Grafana dashboard
-  ConfigMap), values for the upstream `aws-load-balancer-controller` and
-  `kube-prometheus-stack` charts, and a single `workflow_dispatch` GitHub
-  Actions workflow that installs everything in order and surfaces the public
-  ALB URL in the run summary.
+End-to-end, fresh AWS account to live URL.
 
-The intent is a reference small enough that every moving part can be read in
-one sitting, but realistic enough that the same shape scales up: the service
-ships through CI, the cluster comes from code, and the deploy is one click
-away.
+```bash
+# 0. Prereqs: aws CLI v2 (authenticated), terraform >= 1.10, kubectl, helm 3.x,
+#    docker (with buildx) for local image builds. Python 3.12+ for local app dev.
 
-## What is in scope
+# 1. Create the S3 bucket for Terraform state. S3 names are global, so embed
+#    the account id to keep re-runs from colliding.
+export TFSTATE_BUCKET=sample-eks-tfstate-$(aws sts get-caller-identity --query Account --output text)
+export AWS_REGION=us-east-1
+make infra-bootstrap
 
-- HTTP only, served through an internet-facing ALB. No TLS, no DNS.
-- Logs and metrics. No tracing, no OpenTelemetry SDK.
-- Single namespace (`default`) and a single deployment with fixed replicas.
-- Static AWS credentials passed into `workflow_dispatch` — chosen because the
-  AWS account is recreated each demo and we don't want to persist anything on
-  the GitHub side.
+# 2. Provision VPC + EKS (~15 min).
+make infra-init
+make infra-apply                                          # type 'yes'
+
+# 3. Point kubectl at the new cluster, then sanity-check.
+$(terraform -chdir=infra/envs/dev output -raw kubeconfig_command)
+make infra-verify
+
+# 4. Install the three Helm releases (ALB controller, monitoring, microservice).
+make deploy-local
+
+# 5. Grab the public URL and hit it.
+kubectl get ingress -n app microservice
+curl http://<alb-hostname>/
+curl http://<alb-hostname>/healthz
+
+# 6. Tear it all down.
+make infra-destroy
+```
+
+The same install runs from CI: trigger `deploy.yml` from the GitHub Actions UI,
+paste the AWS keys, and the workflow installs everything, polls for the ALB,
+smoke-tests `/healthz`, and prints the URL in the run summary.
+
+## What this is
+
+Three loosely coupled tracks. Each owns its artifacts and can be reviewed,
+applied, or torn down on its own.
+
+- `app/` — FastAPI service. JSON logs, probes, Prometheus metrics, graceful
+  shutdown, multi-arch image built and Trivy-scanned in CI.
+- `infra/` — Terraform for the VPC and EKS cluster, plus the IRSA role the
+  AWS Load Balancer Controller assumes.
+- `deploy/` — Helm chart for the service, values for the upstream
+  `aws-load-balancer-controller` and `kube-prometheus-stack` charts, and the
+  `workflow_dispatch` deploy pipeline.
+
+In scope: HTTP through an internet-facing ALB, JSON logs, Prometheus + Grafana,
+one namespace per release. Out of scope: TLS, DNS, autoscaling, tracing,
+multi-environment promotion.
 
 ## Repo layout
 
 ```
 .
-├── app/                            # Python service + Dockerfile
-├── infra/                          # Terraform (VPC, EKS, IAM)
+├── app/                            # FastAPI service + Dockerfile
+├── infra/                          # Terraform (VPC, EKS, IRSA)
+│   ├── bootstrap/                  # one-time S3 state bucket setup
+│   ├── envs/dev/                   # only environment shipped
+│   └── policies/                   # vendored ALB controller IAM policy
 ├── deploy/
-│   ├── charts/microservice/        # Local helm chart for the service
-│   ├── ingress-controller/         # Values for aws-load-balancer-controller
-│   └── monitoring/                 # Values for kube-prometheus-stack
+│   ├── charts/microservice/        # local Helm chart for the service
+│   ├── ingress-controller/         # values for aws-load-balancer-controller
+│   └── monitoring/                 # values for kube-prometheus-stack
 ├── .github/workflows/              # build-image.yml, deploy.yml
-├── Makefile                        # convenience wrappers
-└── README.md
+└── Makefile                        # convenience wrappers
 ```
 
-## Quickstart
+## AWS architecture
 
-### Microservice
-
-```bash
-make app-install     # create venv + install deps
-make app-test        # run pytest
-make app-run         # serve on http://127.0.0.1:8080
-make image           # docker buildx --load -t sample-service:dev
+```
+                  Internet
+                     │
+                     ▼
+        ┌──────────────────────────┐
+        │   Application Load       │  internet-facing, HTTP :80
+        │   Balancer (3 AZs)       │  managed by aws-load-balancer-controller
+        └──────────────────────────┘
+                     │ target-type: ip
+                     ▼
+   ┌───────────────────────────────────────────────────────┐
+   │  EKS cluster (Kubernetes 1.34)                        │
+   │                                                       │
+   │   namespace: app           namespace: kube-system     │
+   │   ┌──────────────┐         ┌──────────────────────┐   │
+   │   │ microservice │         │ aws-load-balancer-   │   │
+   │   │  (2 pods)    │◀──────▶│   controller (IRSA)  │   │
+   │   └──────────────┘         └──────────────────────┘   │
+   │           │                                           │
+   │           ▼                                           │
+   │   namespace: monitoring                               │
+   │   ┌──────────────────────────┐                        │
+   │   │ kube-prometheus-stack    │                        │
+   │   │  (Prom, Grafana, op.)    │                        │
+   │   └──────────────────────────┘                        │
+   └───────────────────────────────────────────────────────┘
+                     │ private subnets
+                     ▼
+        ┌──────────────────────────┐
+        │  3 AZs × NAT gateway     │  egress for nodes + pods
+        └──────────────────────────┘
 ```
 
-Endpoints: `/`, `/healthz`, `/readyz`, `/metrics`. Configuration is via env
-vars (see `app/README.md`). The container image is built, scanned with Trivy,
-and pushed multi-arch to `ghcr.io/kernel-kun/sample-eks-microservice` by
-`.github/workflows/build-image.yml` on every change under `app/**`.
+- `10.0.0.0/16` VPC, three AZs.
+- Three public `/20` subnets (ALBs, NATs) and three private `/19` subnets
+  (worker nodes). One NAT gateway per AZ — single point of failure per zone,
+  not per region. Subnets carry the `kubernetes.io/role/{elb,internal-elb}`
+  and `kubernetes.io/cluster/<name>=shared` tags the controller looks for.
+- EKS managed node group on AL2023, `t3.medium`, min/desired/max = 2/2/4,
+  in private subnets only.
+- Cluster API endpoint is public + private, KMS secret encryption on,
+  CloudWatch logs for `api`/`audit`/`authenticator`.
+- Add-ons: `vpc-cni` and `kube-proxy` install before the node group (the
+  module ordering matters: without a CNI the node never becomes Ready),
+  `coredns` after.
+- The ALB controller runs under **IRSA**, not Pod Identity. Trust is scoped
+  to `system:serviceaccount:kube-system:aws-load-balancer-controller` plus
+  `aud=sts.amazonaws.com`; the IAM policy is vendored from the upstream
+  chart's matching version tag (`infra/policies/alb-controller.json`).
 
-### Infrastructure
+## Microservice — what makes it cloud-native
 
-```bash
-# One-time per AWS account: create the S3 bucket that holds Terraform state.
-make infra-bootstrap                       # uses TFSTATE_BUCKET, AWS_REGION
+- **Stateless**, fronted by a Service and an ALB. Scaling is just bumping
+  `replicaCount`.
+- **Health probes split**: `/healthz` (liveness, always 200 once the process
+  is up) and `/readyz` (readiness, flips to 503 during graceful shutdown so
+  the ALB stops sending traffic before the pod exits).
+- **Graceful shutdown**: `SIGTERM` → readiness 503 → drain window → exit.
+  `terminationGracePeriodSeconds` accommodates the drain.
+- **Structured logs** (loguru → JSON to stdout). Stdlib logging is
+  intercepted so uvicorn / FastAPI lines flow through the same JSON pipe.
+- **Prometheus metrics** at `/metrics` (request counter + latency histogram,
+  via an ASGI middleware), scraped by a ServiceMonitor.
+- **Pod identity surfaced via Downward API** (`POD_NAME`, `POD_IP`,
+  `POD_NAMESPACE`, `NODE_NAME`) so log lines and `GET /` carry the metadata
+  without the app needing to call the K8s API.
+- **Restricted Pod Security Standard** in the chart: non-root (uid 1000),
+  read-only root filesystem, all Linux capabilities dropped, RuntimeDefault
+  seccomp.
+- **Multi-arch image** (`linux/amd64`, `linux/arm64`), multi-stage build on
+  `python:3.12-slim`, scanned with Trivy in CI before publish.
 
-make infra-init                            # terraform init -backend-config=...
-make infra-plan
-make infra-apply                           # ~15 minutes on a clean account
-$(terraform -chdir=infra/envs/dev output -raw kubeconfig_command)
-kubectl get nodes
-```
+## Terraform structure
 
-`make infra-destroy` tears the cluster and VPC back down. The state bucket
-itself is left behind on purpose. See `infra/README.md` for the long-form
-walkthrough, common pitfalls, and what each module produces.
+Single environment (`infra/envs/dev/`). One `main.tf` glues three things
+together:
 
-### Deploy
+- `terraform-aws-modules/vpc/aws` v6 — the network.
+- `terraform-aws-modules/eks/aws` v21 — cluster, node group, add-ons.
+- A small inline IRSA block — the trust policy + role + vendored IAM policy
+  for the ALB controller.
 
-The deploy is one `workflow_dispatch` away. From the GitHub Actions UI, run
-`deploy.yml` and paste the AWS access key / secret / session token from the
-lab account along with the cluster name and image tag. The workflow installs
-the AWS Load Balancer Controller, kube-prometheus-stack, and the microservice
-chart, waits for the ALB hostname, smoke-tests `/healthz`, and prints the
-public URL in the run summary.
+State lives in S3 with native locking (`use_lockfile = true`, requires
+Terraform `>= 1.10`). The S3 bucket is created once by `infra/bootstrap/bootstrap.sh`
+and is intentionally not Terraform-managed — chicken-and-egg with the backend.
 
-To run the same install locally against an existing kube context:
+`infra/envs/dev/` files at a glance:
 
-```bash
-make chart-lint                            # helm lint + template
-make deploy-local                          # installs all three releases
-```
+| File                       | What's in it                                                                        |
+| -------------------------- | ----------------------------------------------------------------------------------- |
+| `main.tf`                  | VPC + EKS modules, IRSA role, IAM policy attach                                     |
+| `outputs.tf`               | `cluster_name`, `kubeconfig_command`, `vpc_id`, `alb_controller_role_arn`, OIDC URL |
+| `providers.tf`             | aws + kubernetes + helm providers configured for the EKS cluster once it exists     |
+| `backend.tf`               | S3 backend (partial — bucket/region passed via `-backend-config`)                  |
+| `variables.tf` / `*.tfvars.example` | tunables (region, cluster name, k8s version, instance types, sizes)         |
+| `versions.tf`              | required providers, `terraform >= 1.10`                                              |
 
-`deploy-local` defaults to `CLUSTER_NAME=sample-eks` and `AWS_REGION=us-east-1`
-and auto-discovers the VPC ID + ALB controller role ARN from the cluster.
-Override any of those on the command line if your cluster is named or hosted
-differently.
+See `infra/README.md` for what each module produces and the destroy notes.
 
-Long-form walkthrough lives in `deploy/README.md`.
+## GitHub workflows
+
+Two workflows, kept independent so the app pipeline doesn't depend on AWS
+creds and the deploy pipeline doesn't depend on the registry.
+
+### `.github/workflows/build-image.yml`
+
+Builds and pushes the container image. Triggers on `push` to `main`,
+`pull_request`, and `workflow_dispatch` (with a `severity` input that lets
+you override Trivy's failure threshold).
+
+- Sets up QEMU + Buildx.
+- Logs in to GHCR with the workflow's `GITHUB_TOKEN`.
+- Tags: `sha-<short>`, `latest` on default branch, `pr-<n>` on PRs.
+- PRs build single-arch (`linux/amd64`) and load locally so Trivy scans the
+  built image; pushes to `main` build multi-arch (`amd64`, `arm64`) and
+  publish to `ghcr.io/<owner>/sample-eks-microservice`.
+- Trivy runs twice: a table report (gates the job on HIGH/CRITICAL with a
+  fix available) and a SARIF upload to GitHub code scanning.
+
+Run it manually:
+
+> Actions → **build-image** → **Run workflow**, leave `severity` default or
+> override (e.g. `CRITICAL` only).
+
+### `.github/workflows/deploy.yml`
+
+Single `workflow_dispatch` job that installs the three Helm releases against
+an existing EKS cluster.
+
+Inputs:
+
+| Input                   | Purpose                                                                |
+| ----------------------- | ---------------------------------------------------------------------- |
+| `aws_region`            | Region the cluster lives in (default `us-east-1`)                      |
+| `cluster_name`          | EKS cluster name (default `sample-eks`)                                |
+| `image_tag`             | Microservice image tag — `latest`, or `sha-…` from `build-image.yml`    |
+| `aws_access_key_id`     | Access key (masked at runtime via `::add-mask::`)                      |
+| `aws_secret_access_key` | Secret (masked)                                                        |
+| `aws_session_token`     | Session token (masked; optional — required for STS, unused for IAM users) |
+
+What the job does:
+
+1. Masks the credentials, then configures the AWS CLI.
+2. `aws eks update-kubeconfig`, then `kubectl get nodes`.
+3. Adds the `eks` and `prometheus-community` Helm repos.
+4. Discovers the cluster's VPC ID and the ALB controller role ARN.
+5. `helm upgrade --install` for `aws-load-balancer-controller` (`kube-system`),
+   `kube-prometheus-stack` (`monitoring`), and `microservice` (`app`),
+   each with `--wait`.
+6. Polls for the ALB hostname (5 min budget) and smoke-tests `/healthz`
+   (5 min budget — target group registration lags hostname assignment).
+7. Writes URL + curl examples to `$GITHUB_STEP_SUMMARY`.
+
+Static credentials rather than OIDC because the AWS account this runs against
+is treated as ephemeral — the demo doesn't expect a long-lived identity
+provider trust to outlive any single account.
+
+Run it manually:
+
+> Actions → **deploy** → **Run workflow** → fill in cluster + creds.
 
 ## Prerequisites
 
-- `git`, `make`, `docker` (with `buildx`)
-- `python` 3.12+ (for local app dev)
-- `terraform` 1.10+, `aws` CLI v2 (for infra)
-- `kubectl`, `helm` 3.x (for deploy)
+- `aws` CLI v2, authenticated against the target account
+- `terraform` `>= 1.10` (S3 native locking)
+- `kubectl`, `helm` 3.x
+- `docker` with `buildx` (only for local image builds)
+- `python` 3.12+ (only for local app dev)
+
+## Track docs
+
+- `app/README.md` — endpoints, env vars, local dev
+- `infra/README.md` — what each module produces, destroy notes
+- `deploy/README.md` — three releases, what to override on the chart
