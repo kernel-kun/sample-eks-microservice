@@ -1,18 +1,22 @@
 .DEFAULT_GOAL := help
 
 # ---------------------------------------------------------------- microservice
-.PHONY: app-install app-run app-test image
-app-install:    ## Install Python deps for local dev
-	@echo "TODO: filled in by the microservice track"
+APP_DIR    ?= app
+IMAGE_NAME ?= sample-service
+IMAGE_TAG  ?= dev
 
-app-run:        ## Run the service locally
-	@echo "TODO: filled in by the microservice track"
+.PHONY: app-install app-run app-test image
+app-install:    ## Create venv and install app + dev deps
+	cd $(APP_DIR) && python3 -m venv .venv && .venv/bin/pip install --upgrade pip && .venv/bin/pip install -e ".[dev]"
+
+app-run:        ## Run the service locally on :8080
+	cd $(APP_DIR) && .venv/bin/uvicorn sample_service.main:app --host 0.0.0.0 --port 8080
 
 app-test:       ## Run pytest
-	@echo "TODO: filled in by the microservice track"
+	cd $(APP_DIR) && .venv/bin/pytest -q
 
-image:          ## Build the container image locally
-	@echo "TODO: filled in by the microservice track"
+image:          ## Build the container image locally for the host arch
+	docker buildx build --load -t $(IMAGE_NAME):$(IMAGE_TAG) $(APP_DIR)
 
 # ---------------------------------------------------------------- infra
 .PHONY: infra-bootstrap infra-init infra-plan infra-apply infra-destroy
