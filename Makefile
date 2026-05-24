@@ -80,7 +80,7 @@ deploy-local:   ## Install ALB controller + monitoring + microservice against th
 		--set clusterName=$(CLUSTER_NAME) --set region=$(AWS_REGION) --set vpcId=$(VPC_ID) \
 		--wait --timeout 5m
 	helm upgrade --install monitoring prometheus-community/kube-prometheus-stack \
-		-n monitoring --create-namespace --version 65.5.1 \
+		-n monitoring --create-namespace --version 85.3.0 \
 		-f deploy/monitoring/values.yaml --wait --timeout 10m
 	helm upgrade --install microservice $(CHART_DIR) \
 		-n app --create-namespace --wait --timeout 5m

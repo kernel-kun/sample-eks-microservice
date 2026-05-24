@@ -70,7 +70,7 @@ jobs:
       - name: Set up Helm
         uses: azure/setup-helm@v5
         with:
-          version: v3.16.3
+          version: v3.21.0
 
       - name: Add helm repos
         run: |
@@ -105,7 +105,7 @@ jobs:
           helm upgrade --install monitoring \
             prometheus-community/kube-prometheus-stack \
             --namespace monitoring --create-namespace \
-            --version 65.5.1 \
+            --version 85.3.0 \
             -f deploy/monitoring/values.yaml \
             --wait --timeout 10m
 

@@ -32,7 +32,7 @@ deploy/
 | Component                       | Chart version | App version |
 | ------------------------------- | ------------- | ----------- |
 | aws-load-balancer-controller    | 1.14.0        | v2.14.1     |
-| kube-prometheus-stack           | 65.5.1        | (mixed)     |
+| kube-prometheus-stack           | 85.3.0        | (mixed)     |
 | microservice (this chart)       | 0.1.0         | 0.1.0       |
 
 Pinning the upstream charts is what keeps a "deploy now" run reproducible —
