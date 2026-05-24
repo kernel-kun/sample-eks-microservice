@@ -129,14 +129,15 @@ kubectl -n monitoring port-forward svc/monitoring-kube-prometheus-prometheus 909
 
 ## Common pitfalls
 
-- **ALB hostname empty for minutes.** Normal — provisioning takes 90 to 180
+- ALB hostname empty for minutes — normal, provisioning takes 90 to 180
   seconds. The workflow's poll loop already accounts for this.
-- **Grafana dashboard missing.** The sidecar only watches ConfigMaps with the
-  label `grafana_dashboard: "1"`. Confirm with `kubectl get cm -A -l grafana_dashboard=1`.
-- **ServiceMonitor not picked up.** Either the `release: monitoring` label is
+- Grafana dashboard missing — the sidecar only watches ConfigMaps with the
+  label `grafana_dashboard: "1"`. Confirm with
+  `kubectl get cm -A -l grafana_dashboard=1`.
+- ServiceMonitor not picked up — either the `release: monitoring` label is
   wrong (must match the kube-prometheus-stack release name), or the operator
   is configured with namespace selectors that exclude `app`. Our values keep
   the selectors permissive.
-- **Health check fails after the ALB hostname appears.** ALB target group
+- Health check fails after the ALB hostname appears — ALB target group
   registration lags hostname propagation. Give it another minute; the
   workflow already retries `/healthz` for 5 minutes.
