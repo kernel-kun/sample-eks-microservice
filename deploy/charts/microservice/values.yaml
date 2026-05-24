@@ -1,0 +1,100 @@
+replicaCount: 2
+
+image:
+  repository: ghcr.io/kernel-kun/sample-eks-microservice
+  pullPolicy: IfNotPresent
+  # Override at install time: --set image.tag=sha-abc1234
+  tag: latest
+
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+podAnnotations: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8080
+
+# ALB ingress. The ALB controller (installed separately) reconciles this into
+# an internet-facing ALB. healthcheck-path matches the app's readiness probe.
+ingress:
+  enabled: true
+  className: alb
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}]'
+    alb.ingress.kubernetes.io/healthcheck-path: /healthz
+    alb.ingress.kubernetes.io/healthcheck-interval-seconds: "15"
+    alb.ingress.kubernetes.io/success-codes: "200"
+  # Empty host means "match any" — ALB will serve on its assigned DNS name.
+  host: ""
+  path: /
+  pathType: Prefix
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 128Mi
+
+# /healthz never fails for the lifetime of the pod (it just confirms the
+# process is up). /readyz flips to 503 during graceful shutdown drain.
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: http
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  timeoutSeconds: 2
+
+readinessProbe:
+  httpGet:
+    path: /readyz
+    port: http
+  initialDelaySeconds: 2
+  periodSeconds: 5
+  timeoutSeconds: 2
+
+env: {}
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+monitoring:
+  serviceMonitor:
+    enabled: true
+    interval: 30s
+    scrapeTimeout: 10s
+    path: /metrics
+    # Match kube-prometheus-stack's default release label so the operator
+    # picks this monitor up. Override if your stack uses a different label.
+    labels:
+      release: monitoring
+  dashboard:
+    enabled: true

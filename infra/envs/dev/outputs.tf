@@ -19,7 +19,7 @@ output "cluster_certificate_authority_data" {
 }
 
 output "oidc_provider_arn" {
-  description = "ARN of the cluster's IAM OIDC provider. Useful for IRSA-only addons that don't yet support EKS Pod Identity."
+  description = "ARN of the cluster's IAM OIDC provider. Trust principal for IRSA roles."
   value       = module.eks.oidc_provider_arn
 }
 
@@ -29,8 +29,8 @@ output "oidc_provider_url" {
 }
 
 output "alb_controller_role_arn" {
-  description = "IAM role ARN for the AWS Load Balancer Controller. The deploy pipeline annotates the controller's ServiceAccount with this."
-  value       = module.alb_controller_pod_identity.iam_role_arn
+  description = "IAM role ARN for the AWS Load Balancer Controller. The deploy pipeline annotates the controller's ServiceAccount with this via eks.amazonaws.com/role-arn."
+  value       = aws_iam_role.alb_controller.arn
 }
 
 output "vpc_id" {
