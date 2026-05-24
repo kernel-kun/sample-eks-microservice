@@ -76,8 +76,13 @@ module "eks" {
   # node group is created. vpc-cni is required for kubelet to register the
   # node as Ready (no CNI → NetworkPluginNotReady → node group hangs in
   # CREATING until its 35m timeout). kube-proxy is in the same boat for any
-  # workload that talks to a Service. coredns and the pod-identity agent can
-  # install after the nodes are up.
+  # workload that talks to a Service. coredns can install after the nodes are
+  # up.
+  #
+  # eks-pod-identity-agent is intentionally NOT installed — we use IRSA (see
+  # the ALB controller role below). Adding the agent here would cause its
+  # mutating webhook to inject Pod Identity env vars on any pod with a
+  # registered association, which interferes with the IRSA credential path.
   addons = {
     vpc-cni = {
       before_compute = true
@@ -85,8 +90,7 @@ module "eks" {
     kube-proxy = {
       before_compute = true
     }
-    coredns                = {}
-    eks-pod-identity-agent = {}
+    coredns = {}
   }
 
   eks_managed_node_groups = {
@@ -104,22 +108,52 @@ module "eks" {
 }
 
 # ----------------------------------------------------------- alb controller
-module "alb_controller_pod_identity" {
-  source  = "terraform-aws-modules/eks-pod-identity/aws"
-  version = "~> 2.0"
+# IRSA. Trust is scoped to a specific (namespace, sa_name) so only the ALB
+# controller pod can assume this role. The IAM policy is vendored from the
+# upstream chart's matching version tag — refresh
+# infra/policies/alb-controller.json when bumping the chart `--version` in
+# the helm install. Source URL:
+# https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/v2.14.1/docs/install/iam_policy.json
+locals {
+  oidc_provider_host = replace(module.eks.cluster_oidc_issuer_url, "https://", "")
+}
 
-  name = "aws-load-balancer-controller"
+data "aws_iam_policy_document" "alb_controller_trust" {
+  statement {
+    effect  = "Allow"
+    actions = ["sts:AssumeRoleWithWebIdentity"]
 
-  # Module attaches the AWS-published policy for the AWS Load Balancer
-  # Controller, so we don't have to track its JSON over time.
-  attach_aws_lb_controller_policy = true
+    principals {
+      type        = "Federated"
+      identifiers = [module.eks.oidc_provider_arn]
+    }
 
-  associations = {
-    controller = {
-      cluster_name    = module.eks.cluster_name
-      namespace       = "kube-system"
-      service_account = "aws-load-balancer-controller"
+    condition {
+      test     = "StringEquals"
+      variable = "${local.oidc_provider_host}:sub"
+      values   = ["system:serviceaccount:kube-system:aws-load-balancer-controller"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "${local.oidc_provider_host}:aud"
+      values   = ["sts.amazonaws.com"]
     }
   }
+}
+
+resource "aws_iam_role" "alb_controller" {
+  name               = "${var.cluster_name}-alb-controller"
+  assume_role_policy = data.aws_iam_policy_document.alb_controller_trust.json
+}
+
+resource "aws_iam_policy" "alb_controller" {
+  name   = "${var.cluster_name}-alb-controller"
+  policy = file("${path.module}/../../policies/alb-controller.json")
+}
+
+resource "aws_iam_role_policy_attachment" "alb_controller" {
+  role       = aws_iam_role.alb_controller.name
+  policy_arn = aws_iam_policy.alb_controller.arn
 }
 
