@@ -12,11 +12,12 @@
 # clusterName / region / vpcId are passed at install time from the deploy
 # workflow so the same file works for any cluster.
 
-# Use the SA that Terraform pre-created with the Pod Identity association
-# bound to the controller's IAM role. We do NOT let the chart create the SA
-# (its annotations would race with our IRSA-free, Pod-Identity-only setup).
+# EKS Pod Identity binds (namespace, sa_name) -> IAM role at the cluster
+# level — it does NOT create the SA. So we let the chart create it. No
+# eks.amazonaws.com/role-arn annotation is needed; that's an IRSA thing,
+# and Terraform set us up for Pod Identity instead.
 serviceAccount:
-  create: false
+  create: true
   name: aws-load-balancer-controller
 
 # Two replicas spread the leader-election load and survive a node roll.
