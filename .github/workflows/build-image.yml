@@ -84,6 +84,7 @@ jobs:
         with:
           image-ref: ${{ steps.scan-tag.outputs.tag }}
           format: table
+          output: trivy-table.txt
           severity: ${{ inputs.severity || 'HIGH,CRITICAL' }}
           exit-code: '1'
           ignore-unfixed: true
@@ -102,7 +103,7 @@ jobs:
 
       - name: Upload SARIF to code scanning
         if: always()
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: trivy.sarif
 
@@ -123,5 +124,15 @@ jobs:
               echo "**Platforms:** linux/amd64 (PR — single-arch for local scan)"
             else
               echo "**Platforms:** linux/amd64, linux/arm64"
+            fi
+            echo
+            echo "## Trivy scan (HIGH,CRITICAL, fixed)"
+            echo
+            if [[ -s trivy-table.txt ]]; then
+              echo '```'
+              cat trivy-table.txt
+              echo '```'
+            else
+              echo "_No report produced — scan step did not run or produced no output._"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
